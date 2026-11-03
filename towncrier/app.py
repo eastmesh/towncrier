@@ -27,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
   except Exception as exc: self.page(str(exc))
  def page(self,error=""):
   rows=self.store.schedules(); q=parse_qs(urlparse(self.path).query); edit=self.store.get(q["edit"][0]) if q.get("edit") else None; e=edit or {"id":"","name":"","channel":0,"message":"","interval":3600,"enabled":1}
-  out='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Towncrier</title><style>'+CSS+'</style></head><body><h1>Towncrier</h1><p>Local-only scheduler; no authentication. Keep this port on loopback.</p>'
+  out='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Towncrier</title><style>'+CSS+'</style></head><body><h1>Towncrier</h1><p>Network-accessible scheduler; no authentication. Use only on a trusted network.</p>'
   if error: out+='<p class="error">'+esc(error)+'</p>'
   out+='<form method="post" action="/settings"><h2>USB companion</h2><label>Serial port <input name="port" value="'+esc(self.store.setting("port","/dev/ttyUSB0"))+'"></label> <label>Baud <input name="baud" type="number" value="'+esc(self.store.setting("baud","115200"))+'"></label> <button>Save settings</button></form><h2>Schedules</h2><table><tr><th>Name</th><th>Channel</th><th>Interval</th><th>Status</th><th>Actions</th></tr>'
   for r in rows:
@@ -38,7 +38,7 @@ class Handler(BaseHTTPRequestHandler):
   data=body.encode(); self.send_response(200); self.send_header("Content-Type",typ+"; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)
  def log_message(self,*args): pass
 def main(argv=None):
- p=argparse.ArgumentParser(); p.add_argument("--db",default="towncrier.db"); p.add_argument("--host",default="127.0.0.1"); p.add_argument("--port",type=int,default=8080); a=p.parse_args(argv); store=Store(a.db); Handler.store=store; stop=threading.Event(); Scheduler(store,stop).start(); server=ThreadingHTTPServer((a.host,a.port),Handler)
+ p=argparse.ArgumentParser(); p.add_argument("--db",default="towncrier.db"); p.add_argument("--host",default="0.0.0.0"); p.add_argument("--port",type=int,default=8080); a=p.parse_args(argv); store=Store(a.db); Handler.store=store; stop=threading.Event(); Scheduler(store,stop).start(); server=ThreadingHTTPServer((a.host,a.port),Handler)
  try: server.serve_forever()
  except KeyboardInterrupt: pass
  finally: stop.set(); server.server_close()

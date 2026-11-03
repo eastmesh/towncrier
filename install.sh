@@ -14,7 +14,7 @@ $SUDO python3 -m venv "$PREFIX/.venv"; $SUDO "$PREFIX/.venv/bin/python" -m pip i
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then $SUDO useradd --system --home-dir "$PREFIX" --shell /usr/sbin/nologin "$SERVICE_USER"; fi
 if getent group dialout >/dev/null 2>&1; then $SUDO usermod -aG dialout "$SERVICE_USER"; fi
 $SUDO mkdir -p /var/lib/towncrier; $SUDO chown -R "$SERVICE_USER:$SERVICE_USER" /var/lib/towncrier
-$SUDO sed -e "s|^User=.*|User=$SERVICE_USER|" -e "s|^WorkingDirectory=.*|WorkingDirectory=$PREFIX|" -e "s|^ExecStart=.*|ExecStart=$PREFIX/.venv/bin/towncrier --db /var/lib/towncrier/towncrier.db --host 127.0.0.1 --port 8080|" "$PREFIX/systemd/towncrier.service" > /tmp/towncrier.service
+$SUDO sed -e "s|^User=.*|User=$SERVICE_USER|" -e "s|^WorkingDirectory=.*|WorkingDirectory=$PREFIX|" -e "s|^ExecStart=.*|ExecStart=$PREFIX/.venv/bin/towncrier --db /var/lib/towncrier/towncrier.db --host 0.0.0.0 --port 8080|" "$PREFIX/systemd/towncrier.service" > /tmp/towncrier.service
 $SUDO install -m 0644 /tmp/towncrier.service /etc/systemd/system/towncrier.service
 rm -f /tmp/towncrier.service
 $SUDO systemctl daemon-reload

@@ -11,7 +11,7 @@ This guide assumes this is your first time using a Linux desktop and a terminal.
 - An internet connection during installation so Python can download `meshcore`.
 - An account that is allowed to use `sudo` (the installer needs administrator permission).
 
-The web page is deliberately local-only and has no login. Do not expose it to the internet or bind it to a public network address.
+The web page is available to other devices on the same network and has no login. Treat it as an administrator page: use it only on a trusted private network, and do not forward port 8080 from the internet.
 
 ## 1. Open a terminal
 
@@ -53,13 +53,29 @@ The installer:
 6. Installs the `meshcore` Python library.
 7. Installs the systemd service, enables it to start at boot, and starts it now.
 
-When it finishes, open your normal web browser (Firefox, Chrome, Chromium, or similar) and enter:
+When it finishes, open your normal web browser (Firefox, Chrome, Chromium, or similar) on the Towncrier computer and enter:
 
 ```text
 http://127.0.0.1:8080/
 ```
 
 `127.0.0.1` means “this computer”. It does not mean a website on the public internet.
+
+### Open it from another computer or phone
+
+Towncrier listens on all network interfaces on port `8080`. To find the Linux computer's local network address, open a terminal on that computer and run:
+
+```bash
+hostname -I
+```
+
+Choose the address belonging to your home or office network, often something like `192.168.1.25`. On the other computer or phone, connect to the same network, open a browser, and enter:
+
+```text
+http://192.168.1.25:8080/
+```
+
+Replace `192.168.1.25` with the address shown on your computer. If a firewall is enabled, allow port 8080 only on the trusted local-network profile. Do not use a public IP address, router port forwarding, or an internet-facing reverse proxy unless authentication and HTTPS are added first.
 
 ## 4. Find the USB serial device
 
@@ -152,7 +168,7 @@ systemctl status towncrier
 sudo journalctl -u towncrier -n 50
 ```
 
-If the service is stopped, run `sudo systemctl restart towncrier` and try `http://127.0.0.1:8080/` again. Another program may already be using port 8080; the log will show the error.
+If the service is stopped, run `sudo systemctl restart towncrier` and try `http://127.0.0.1:8080/` again. Another program may already be using port 8080; the log will show the error. For another device, also confirm it is on the same network and try the Linux computer's address from `hostname -I`.
 
 ### The page opens but messages are not sent
 
