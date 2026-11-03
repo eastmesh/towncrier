@@ -1,9 +1,12 @@
 import sqlite3, threading, time
-MIN_INTERVAL=60; MAX_MESSAGE=500
+MIN_INTERVAL=1800
+MAX_MESSAGE=500
 class Store:
  def __init__(self,path):
   self.path=str(path); self.lock=threading.RLock()
-  with self.connect() as db: db.executescript("""CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS schedules(id INTEGER PRIMARY KEY,name TEXT NOT NULL,channel INTEGER NOT NULL CHECK(channel BETWEEN 0 AND 255),message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 500),interval INTEGER NOT NULL CHECK(interval>=60),enabled INTEGER NOT NULL DEFAULT 1,next_send REAL NOT NULL,last_send REAL,last_error TEXT,status TEXT);""")
+  with self.connect() as db:
+   db.executescript("""CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS schedules(id INTEGER PRIMARY KEY,name TEXT NOT NULL,channel INTEGER NOT NULL CHECK(channel BETWEEN 0 AND 255),message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 500),interval INTEGER NOT NULL CHECK(interval>=60),enabled INTEGER NOT NULL DEFAULT 1,next_send REAL NOT NULL,last_send REAL,last_error TEXT,status TEXT);""")
+   db.execute("UPDATE schedules SET interval=? WHERE interval<?",(MIN_INTERVAL,MIN_INTERVAL))
  def connect(self):
   db=sqlite3.connect(self.path,timeout=10); db.row_factory=sqlite3.Row; return db
  def setting(self,key,default=""):
@@ -18,7 +21,7 @@ class Store:
    r=db.execute("SELECT * FROM schedules WHERE id=?",(ident,)).fetchone(); return dict(r) if r else None
  def save(self,data,ident=None):
   name=str(data["name"]).strip()[:80]; channel=int(data["channel"]); interval=int(data["interval"]); message=str(data["message"])
-  if not name or not 0<=channel<=255 or interval<MIN_INTERVAL or not 1<=len(message)<=MAX_MESSAGE: raise ValueError("name, channel 0-255, message 1-500 chars, interval >= 60 seconds required")
+  if not name or not message.strip() or not 0<=channel<=255 or interval<MIN_INTERVAL or interval%60 or not 1<=len(message)<=MAX_MESSAGE: raise ValueError("name, channel 0-255, non-empty message 1-500 chars, and interval of at least 30 minutes required")
   enabled=1 if data.get("enabled",True) else 0
   with self.lock,self.connect() as db:
    if ident: db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,enabled=? WHERE id=?",(name,channel,message,interval,enabled,int(ident)))

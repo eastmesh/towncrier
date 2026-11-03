@@ -108,17 +108,33 @@ On the Towncrier page, the **USB companion** section contains:
 
 Click **Save settings**. The settings are stored in `/var/lib/towncrier/towncrier.db` and remain after a reboot.
 
-## 6. Add a scheduled message
+## 6. Configure radio channels
+
+The **Radio channels** section reads the channel slots directly from the connected radio. These settings are not only local Towncrier labels; saving or deleting a channel sends the change to the radio.
+
+To add or replace a channel:
+
+1. Enter a channel index from `0` to `255`.
+2. Enter a channel name of up to 32 bytes.
+3. For a public topic channel, use a name beginning with `#`, such as `#weather`, and leave the secret blank. MeshCore derives the topic key from that name.
+4. For a private channel, enter exactly 32 hexadecimal characters as the secret. Treat this value like a password and do not share it publicly.
+5. Click **Save channel on radio**.
+
+The channel list displays configured channels without displaying private secrets. Click **delete** to clear a channel slot on the radio. MeshCore implements deletion by writing an empty name and an all-zero secret. Do not delete a channel that is still used by a schedule; change or disable that schedule first.
+
+The page reads up to 40 radio channel slots when it loads. Channel indices are validated locally, and the radio remains the source of truth.
+
+## 7. Add a scheduled message
 
 Use the **Add schedule** form:
 
 - **Name**: a short label you will recognise, such as `Morning status`.
 - **Channel index**: the numeric MeshCore channel slot, from `0` to `255`. This is the channel index configured on the companion radio, not the channel name.
-- **Interval seconds**: how often to send the message. The smallest allowed value is `60`, meaning once per minute. For once per hour, enter `3600`.
-- **Message**: the text to send. Messages may contain up to 500 characters.
+- **Hours** and **Minutes**: how often to send the message. The smallest allowed value is 30 minutes. For once per hour, enter `0` hours and `60` is not valid; instead enter `1` hour and `0` minutes. Minutes must be from `0` to `59`.
+- **Message**: the text to send. Messages may contain up to 500 characters. Towncrier automatically sends long messages as multiple channel messages, aiming for about 120 characters per part and never exceeding 130 characters per part. Splitting happens at spaces where possible; very long words are cut safely.
 - **Enabled**: leave checked for the scheduler to send it. Uncheck it when you want to keep the message without sending it.
 
-Click **Save schedule**. The schedule is immediately stored. The first send is due as soon as the scheduler sees it; later sends use the interval you entered.
+Click **Save schedule**. The schedule is immediately stored. The first send is due as soon as the scheduler sees it; later sends use the hours-and-minutes interval you entered. Existing schedules created with the older seconds-based interface are raised to the new 30-minute minimum automatically.
 
 The schedule table shows whether an item is enabled, its last status, and the most recent error. The available actions are:
 
@@ -129,7 +145,7 @@ The schedule table shows whether an item is enabled, its last status, and the mo
 
 A failed radio send is recorded as an error. Towncrier does not advance the timer after a failed send, so it will try again rather than silently losing the message.
 
-## 7. Check or control the service
+## 8. Check or control the service
 
 To see whether it is running:
 
