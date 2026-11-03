@@ -1,0 +1,12 @@
+[Unit]
+Description=Towncrier MeshCore scheduler
+After=network.target
+[Service]
+Type=simple
+User=towncrier
+WorkingDirectory=/opt/towncrier
+ExecStart=/opt/towncrier/.venv/bin/towncrier --db /var/lib/towncrier/towncrier.db --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

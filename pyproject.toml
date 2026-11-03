@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "towncrier"
+version = "0.1.0"
+description = "MeshCore channel message scheduler for Linux"
+requires-python = ">=3.10"
+dependencies = ["meshcore>=2.2.0"]
+[project.scripts]
+towncrier = "towncrier.app:main"
+[tool.setuptools.packages.find]
+include = ["towncrier*"]
