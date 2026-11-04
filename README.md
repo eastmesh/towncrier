@@ -4,6 +4,10 @@ Towncrier schedules messages to MeshCore **channels** through a USB-connected co
 
 This guide assumes this is your first time using a Linux desktop and a terminal.
 
+![Towncrier setup page](docs/screenshots/towncrier-overview.png)
+
+*The page is split into simple sections: radio settings, channels, USB connection, and schedules.*
+
 ## What you need
 
 - A Linux computer with a desktop and a web browser.
@@ -47,7 +51,7 @@ The installer:
 
 1. Checks that the computer is Linux and has Python 3.10 or newer, pip, venv, and systemd.
 2. Creates the system account `towncrier` if it does not already exist.
-3. Adds that account to the `dialout` serial-device group when the group exists.
+3. Adds that account to the `dialout` serial-device group and, when the connected device uses another Linux group, to that device group too.
 4. Installs Towncrier under `/opt/towncrier`.
 5. Creates `/var/lib/towncrier` for the database and gives it to the service account.
 6. Installs the `meshcore` Python library.
@@ -108,6 +112,20 @@ On the Towncrier page, the **USB companion** section contains:
 
 Click **Save settings**. The settings are stored in `/var/lib/towncrier/towncrier.db` and remain after a reboot.
 
+### Choose a radio preset
+
+The **Radio settings** section contains the official MeshCore Australian suggestions:
+
+- **Australia** — 915.800 MHz, BW 250, SF10, CR5
+- **Australia (Narrow)** — 916.575 MHz, BW 62.5, SF7, CR7
+- **Australia (Mid)** — 915.075 MHz, BW 125, SF9, CR5
+- **Australia: SA, WA** — 923.125 MHz, BW 62.5, SF8, CR8
+- **Australia: QLD** — 923.125 MHz, BW 62.5, SF8, CR5
+
+Choose the preset used by nearby MeshCore users and repeaters, then click **Apply preset to radio**. The radio may briefly disconnect while it applies the change; Towncrier reconnects and verifies the settings. Do not choose a different regional preset unless it matches the network you want to use.
+
+![Radio settings and channels](docs/screenshots/towncrier-full.png)
+
 ## 6. Configure radio channels
 
 The **Radio channels** section reads the channel slots directly from the connected radio. These settings are not only local Towncrier labels; saving or deleting a channel sends the change to the radio.
@@ -142,6 +160,18 @@ The schedule table shows whether an item is enabled, its last status, and the mo
 - **toggle**: enable or disable it.
 - **send now**: send one copy immediately without changing its normal timer.
 - **delete**: permanently remove it.
+
+A safe first test is:
+
+1. Choose an unused slot, such as `2`.
+2. Enter `#test` as the name.
+3. Leave **Private secret** blank.
+4. Click **Save channel on radio**.
+5. Create a schedule using channel index `2`, a 30-minute interval, and a short message.
+6. Click **send now** in the schedule table.
+7. Watch the radio and the schedule status. A successful send changes the status to `sent`; an error is shown in the table.
+
+Use a different slot if it is already configured. Do not delete or replace a channel used by another schedule unless that change is intentional.
 
 A failed radio send is recorded as an error. Towncrier does not advance the timer after a failed send, so it will try again rather than silently losing the message.
 
@@ -192,9 +222,34 @@ Check the serial port spelling, baud rate, radio power, companion firmware, and 
 
 ### The radio device changes name after reboot
 
-Some Linux systems assign a different `/dev/ttyUSB*` number when several USB serial devices are present. Reconnect the radio, run the `ls` command again, update the Serial port field, and save it.
+Some Linux systems assign a different `/dev/ttyUSB*` or `/dev/ttyACM*` number when several USB serial devices are present. Prefer the stable path shown by:
 
-### I want to remove Towncrier
+```bash
+ls -l /dev/serial/by-id/
+```
+
+Choose the link whose name identifies your MeshCore radio and paste that full `/dev/serial/by-id/...` path into Towncrier. Reconnect the radio, run the command again, update the Serial port field, and save it.
+
+### Permission denied or the remote terminal cannot open the radio
+
+Only one program can use a USB serial radio at a time. Stop Towncrier before opening the same radio with another terminal or companion tool:
+
+```bash
+sudo systemctl stop towncrier
+# use the other radio tool here
+sudo systemctl start towncrier
+```
+
+Check who owns the device:
+
+```bash
+sudo fuser -v /dev/ttyACM0
+id towncrier
+```
+
+The installer adds Towncrier to `dialout` and to the group currently assigned to the configured serial device. Restart Towncrier after group membership changes.
+
+## 11. I want to remove Towncrier
 
 Stop and disable it first:
 
