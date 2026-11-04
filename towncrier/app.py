@@ -53,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
    from .radio import Radio
    channels=Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")).channels()
   except Exception as exc: channel_error=str(exc)
-  out='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Towncrier · EastMesh</title><style>'+CSS+'</style></head><body><main><header><div class="eyebrow">EastMesh · Community mesh. Local signal.</div><h1>Towncrier</h1><p class="muted">Schedule clear, reliable channel messages from your MeshCore radio.</p></header><p class="muted">Network-accessible scheduler; no authentication. Use only on a trusted network.</p>'
+  out='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Towncrier</title><style>'+CSS+'</style></head><body><main><header><div class="eyebrow">MeshCore channel scheduler</div><h1>Towncrier</h1><p class="muted">Schedule clear, reliable channel messages from your MeshCore radio.</p></header><p class="muted">Network-accessible scheduler; no authentication. Use only on a trusted network.</p>'
   if error: out+='<p class="error">'+esc(error)+'</p>'
   out+='<h2>Radio channels</h2><p>Channels are stored on the radio itself. Use a name beginning with <code>#</code> for a public topic channel, or enter a 32-character hexadecimal secret for a private channel.</p>'
   if channel_error: out+='<p class="error">Could not read channels: '+esc(channel_error)+'</p>'
