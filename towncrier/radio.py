@@ -24,8 +24,8 @@ class Radio:
                 channel = event.payload
                 name = channel.get("channel_name", "").strip()
                 secret = channel.get("channel_secret", b"")
-                if name or secret.strip(b"\x00"):
-                    result.append({"index": index, "name": name})
+                if len(secret) != 16: secret = b"\x00" * 16
+                result.append({"index":index,"name":name,"configured":bool(name or secret.strip(b"\x00"))})
             return result
         finally: await mc.disconnect()
     async def _set_channel(self, index, name, secret):
