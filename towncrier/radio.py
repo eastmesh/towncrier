@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import threading
 
 class Radio:
@@ -38,7 +39,18 @@ class Radio:
         mc = await self._connect()
         try:
             result = await mc.commands.set_channel(index, name, secret)
-            if result.type == EventType.ERROR: raise RuntimeError(result.payload)
+            if result.type == EventType.ERROR and result.payload.get("reason") != "no_event_received":
+                raise RuntimeError(result.payload)
+        finally: await mc.disconnect()
+        await asyncio.sleep(1)
+        mc = await self._connect()
+        try:
+            event = await mc.commands.get_channel(index)
+            if event.type == EventType.ERROR: raise RuntimeError(event.payload)
+            channel = event.payload
+            expected = hashlib.sha256(name.encode()).digest()[:16] if name.startswith("#") or secret is None else secret
+            if channel.get("channel_name") != name or channel.get("channel_secret") != expected:
+                raise RuntimeError("radio did not confirm the channel change")
         finally: await mc.disconnect()
     def send(self, channel, message):
         with self._lock: asyncio.run(self._send(channel, message))
