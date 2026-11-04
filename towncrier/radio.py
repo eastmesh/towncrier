@@ -7,7 +7,9 @@ class Radio:
     def __init__(self, port, baud): self.port, self.baud = port, int(baud)
     async def _connect(self):
         from meshcore import MeshCore
-        return await MeshCore.create_serial(self.port, self.baud)
+        mc = await MeshCore.create_serial(self.port, self.baud)
+        if mc is None: raise RuntimeError("radio did not respond as a MeshCore serial companion")
+        return mc
     async def _send(self, channel, message):
         from meshcore import EventType
         mc = await self._connect()
