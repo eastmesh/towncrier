@@ -57,13 +57,8 @@ class Handler(BaseHTTPRequestHandler):
   channels=[]; channel_error=""; radio_settings={}; radio_error=""
   try:
    from .radio import Radio
-   radio=Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200"))
-   radio_settings=radio.radio_settings()
-  except Exception as exc: radio_error=str(exc)
-  try:
-   from .radio import Radio
-   channels=Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")).channels()
-  except Exception as exc: channel_error=str(exc)
+   radio_settings,channels=Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")).snapshot()
+  except Exception as exc: radio_error=channel_error=str(exc)
   out='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Towncrier</title><style>'+CSS+'</style></head><body><main><header><div class="eyebrow">MeshCore channel scheduler</div><h1>Towncrier</h1><p class="muted">Schedule clear, reliable channel messages from your MeshCore radio.</p></header><p class="muted">Network-accessible scheduler; no authentication. Use only on a trusted network.</p>'
   if error: out+='<p class="error">'+esc(error)+'</p>'
   out+='<h2>Radio settings</h2><form class="card" method="post" action="/radio-settings"><label>Australian MeshCore preset<select required name="preset">'+''.join('<option value="'+esc(name)+'">'+esc(name)+' — '+str(values[0])+' MHz / BW '+str(values[1])+' / SF '+str(values[2])+' / CR '+str(values[3])+'</option>' for name,values in RADIO_PRESETS.items())+'</select></label><p class="muted">Current: '+esc(radio_settings or radio_error or 'unavailable')+'</p><button>Apply preset to radio</button></form>'

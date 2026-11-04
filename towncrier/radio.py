@@ -17,11 +17,24 @@ class Radio:
             result = await mc.commands.send_chan_msg(channel, message)
             if result.type == EventType.ERROR: raise RuntimeError(result.payload)
         finally: await mc.disconnect()
-    async def _radio_settings(self):
-        mc = await self._connect()
+    async def _snapshot(self):
+        from meshcore import EventType
+        mc = await self._connect(); result=[]
         try:
-            return {key: mc.self_info.get(key) for key in ("radio_freq", "radio_bw", "radio_sf", "radio_cr")}
+            info = {key: mc.self_info.get(key) for key in ("radio_freq", "radio_bw", "radio_sf", "radio_cr")}
+            device = await mc.commands.send_device_query()
+            limit = int(device.payload.get("max_channels", 40)) if device.type == EventType.DEVICE_INFO else 40
+            for index in range(max(1, min(limit, 256))):
+                event = await mc.commands.get_channel(index)
+                if event.type == EventType.ERROR: continue
+                channel = event.payload
+                name = channel.get("channel_name", "").strip()
+                secret = channel.get("channel_secret", b"")
+                result.append({"index": index, "name": name, "configured": bool(name or secret.strip(b"\\x00"))})
+            return info, result
         finally: await mc.disconnect()
+    async def _radio_settings(self):
+        return (await self._snapshot())[0]
     async def _set_radio(self, freq, bw, sf, cr):
         from meshcore import EventType
         mc = await self._connect()
@@ -37,24 +50,7 @@ class Radio:
             raise RuntimeError("radio did not confirm the radio settings")
         return settings
     async def _channels(self):
-        from meshcore import EventType
-        mc=await self._connect(); result=[]
-        try:
-            limit=40
-            info=await mc.commands.send_device_query()
-            if info.type==EventType.DEVICE_INFO:
-                limit=int(info.payload.get("max_channels",limit))
-            limit=max(1,min(limit,256))
-            for index in range(limit):
-                event = await mc.commands.get_channel(index)
-                if event.type == EventType.ERROR: continue
-                channel = event.payload
-                name = channel.get("channel_name", "").strip()
-                secret = channel.get("channel_secret", b"")
-                if len(secret) != 16: secret = b"\x00" * 16
-                result.append({"index":index,"name":name,"configured":bool(name or secret.strip(b"\x00"))})
-            return result
-        finally: await mc.disconnect()
+        return (await self._snapshot())[1]
     async def _set_channel(self, index, name, secret):
         from meshcore import EventType
         mc = await self._connect()
@@ -75,6 +71,8 @@ class Radio:
         finally: await mc.disconnect()
     def send(self, channel, message):
         with self._lock: asyncio.run(self._send(channel, message))
+    def snapshot(self):
+        with self._lock: return asyncio.run(self._snapshot())
     def radio_settings(self):
         with self._lock: return asyncio.run(self._radio_settings())
     def set_radio(self, freq, bw, sf, cr):
