@@ -16,9 +16,14 @@ class Radio:
         finally: await mc.disconnect()
     async def _channels(self):
         from meshcore import EventType
-        mc = await self._connect(); result = []
+        mc=await self._connect(); result=[]
         try:
-            for index in range(40):
+            limit=40
+            info=await mc.commands.send_device_query()
+            if info.type==EventType.DEVICE_INFO:
+                limit=int(info.payload.get("max_channels",limit))
+            limit=max(1,min(limit,256))
+            for index in range(limit):
                 event = await mc.commands.get_channel(index)
                 if event.type == EventType.ERROR: continue
                 channel = event.payload
