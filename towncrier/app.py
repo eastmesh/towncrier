@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlparse
 from .db import Store
 from .engine import Scheduler, send_message
 CSS=""":root{--ink:#222;--surface:#303030;--soft:#343434;--text:#e6eaf0;--muted:#9aa4b2;--green:#36a167;--green-dark:#267342;--deep:#224c36;--blue:#1e3a5f;--border:rgba(255,255,255,.08);--shadow:0 10px 30px rgba(0,0,0,.45)}*{box-sizing:border-box}body{margin:0;background:var(--ink);color:var(--text);font:16px/1.6 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1200px;margin:0 auto;padding:36px 24px 48px}header{border-bottom:1px solid var(--border);margin-bottom:24px;padding-bottom:20px}h1{font-size:2.4rem;line-height:1.15;margin:0;color:#fff}h1:before{content:'◈';color:var(--green);margin-right:12px}h2{font-size:1.5rem;line-height:1.25;margin-top:0}h3{margin-bottom:8px}.eyebrow{color:var(--green);font-size:.75rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase}.muted,small{color:var(--muted)}.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:24px;margin:24px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px}label{display:flex;flex-direction:column;gap:4px;font-weight:600}input,textarea,select,button{font:inherit}input,textarea,select{background:var(--soft);border:1px solid var(--border);border-radius:10px;color:var(--text);padding:9px 11px}textarea{width:100%;min-height:110px}input:focus,textarea:focus,select:focus{outline:2px solid var(--green);outline-offset:2px}button{background:var(--green-dark);border:0;border-radius:999px;color:#fff;cursor:pointer;padding:9px 15px;font-weight:700}button:hover{background:#287a43}.secondary{background:var(--deep)}.danger{background:#7f2933}.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.inline{display:inline;margin:0;padding:0;border:0;box-shadow:none;background:none}table{width:100%;border-collapse:collapse}th{color:var(--muted);font-size:.75rem;letter-spacing:.1em;text-align:left;text-transform:uppercase}td,th{border-bottom:1px solid var(--border);padding:12px 8px}code{background:var(--soft);border-radius:10px;padding:2px 6px}@media(max-width:700px){main{padding:24px 12px}.card{padding:16px}table{display:block;overflow-x:auto;white-space:nowrap}h1{font-size:2rem}}"""
+RADIO_PRESETS={"Australia":(915.800,250,10,5),"Australia (Narrow)":(916.575,62.5,7,7),"Australia (Mid)":(915.075,125,9,5),"Australia: SA, WA":(923.125,62.5,8,8),"Australia: QLD":(923.125,62.5,8,5)}
 def esc(v): return html.escape(str(v),quote=True)
 def duration_parts(seconds): return int(seconds)//3600,(int(seconds)%3600)//60
 def duration_label(seconds):
@@ -18,6 +19,11 @@ class Handler(BaseHTTPRequestHandler):
   form={k:v[0] for k,v in parse_qs(self.rfile.read(int(self.headers.get("Content-Length",0))).decode(),keep_blank_values=True).items()}; path=urlparse(self.path).path
   try:
    if path=="/settings": self.store.set_setting("port",form.get("port","/dev/ttyUSB0")); self.store.set_setting("baud",form.get("baud","115200"))
+   elif path=="/radio-settings":
+    from .radio import Radio
+    preset=form.get("preset","")
+    if preset not in RADIO_PRESETS: raise ValueError("choose a valid Australian MeshCore preset")
+    Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")).set_radio(*RADIO_PRESETS[preset])
    elif path=="/channel-save":
     from .radio import Radio
     index=int(form.get("channel_index","-1")); name=form.get("channel_name","").strip(); secret_hex=form.get("channel_secret","").strip()
@@ -48,13 +54,19 @@ class Handler(BaseHTTPRequestHandler):
   except Exception as exc: self.page(str(exc))
  def page(self,error=""):
   rows=self.store.schedules(); q=parse_qs(urlparse(self.path).query); edit=self.store.get(q["edit"][0]) if q.get("edit") else None; e=edit or {"id":"","name":"","channel":0,"message":"","interval":3600,"enabled":1}; hours,minutes=duration_parts(e["interval"])
-  channels=[]; channel_error=""
+  channels=[]; channel_error=""; radio_settings={}; radio_error=""
+  try:
+   from .radio import Radio
+   radio=Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200"))
+   radio_settings=radio.radio_settings()
+  except Exception as exc: radio_error=str(exc)
   try:
    from .radio import Radio
    channels=Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")).channels()
   except Exception as exc: channel_error=str(exc)
   out='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Towncrier</title><style>'+CSS+'</style></head><body><main><header><div class="eyebrow">MeshCore channel scheduler</div><h1>Towncrier</h1><p class="muted">Schedule clear, reliable channel messages from your MeshCore radio.</p></header><p class="muted">Network-accessible scheduler; no authentication. Use only on a trusted network.</p>'
   if error: out+='<p class="error">'+esc(error)+'</p>'
+  out+='<h2>Radio settings</h2><form class="card" method="post" action="/radio-settings"><label>Australian MeshCore preset<select required name="preset">'+''.join('<option value="'+esc(name)+'">'+esc(name)+' — '+str(values[0])+' MHz / BW '+str(values[1])+' / SF '+str(values[2])+' / CR '+str(values[3])+'</option>' for name,values in RADIO_PRESETS.items())+'</select></label><p class="muted">Current: '+esc(radio_settings or radio_error or 'unavailable')+'</p><button>Apply preset to radio</button></form>'
   out+='<h2>Radio channels</h2><p>Channels are stored on the radio itself. Use a name beginning with <code>#</code> for a public topic channel, or enter a 32-character hexadecimal secret for a private channel.</p>'
   if channel_error: out+='<p class="error">Could not read channels: '+esc(channel_error)+'</p>'
   out+='<table><tr><th>Index</th><th>Name</th><th>State</th><th>Action</th></tr>'
