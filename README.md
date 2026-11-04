@@ -28,6 +28,7 @@ Commands below are typed into that window. Press **Enter** after each command. W
 In the terminal, run:
 
 ```bash
+cd ~ (to get to the users home directory)
 git clone https://github.com/eastmesh/towncrier.git
 cd towncrier
 ```
