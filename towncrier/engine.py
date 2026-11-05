@@ -5,15 +5,27 @@ MAX_CHUNK=130
 MESSAGE_DELAY=3
 
 def split_message(message):
- words=message.split(); chunks=[]; current=""
- for word in words:
-  while len(word)>MAX_CHUNK:
-   if current: chunks.append(current); current=""
-   chunks.append(word[:MAX_CHUNK]); word=word[MAX_CHUNK:]
-  candidate=word if not current else current+" "+word
-  if current and (len(candidate)>MAX_CHUNK or len(current)>=TARGET_CHARS):
-   chunks.append(current); current=word
-  else: current=candidate
+ if "\n" not in message and "\r" not in message:
+  words=message.split(); chunks=[]; current=""
+  for word in words:
+   while len(word)>MAX_CHUNK:
+    if current: chunks.append(current); current=""
+    chunks.append(word[:MAX_CHUNK]); word=word[MAX_CHUNK:]
+   candidate=word if not current else current+" "+word
+   if current and (len(candidate)>MAX_CHUNK or len(current)>=TARGET_CHARS):
+    chunks.append(current); current=word
+   else: current=candidate
+  if current: chunks.append(current)
+  return chunks
+ chunks=[]; current=""
+ for line in message.splitlines(keepends=True):
+  while line:
+   room=MAX_CHUNK-len(current)
+   if len(line)<=room:
+    current+=line; line=""
+   else:
+    if current: chunks.append(current); current=""; room=MAX_CHUNK
+    chunks.append(line[:room]); line=line[room:]
  if current: chunks.append(current)
  return chunks
 

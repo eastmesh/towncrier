@@ -69,6 +69,9 @@ class StoreTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 130 for chunk in chunks))
         self.assertEqual(" ".join(chunks), " ".join(["word"] * 100))
+    def test_split_message_preserves_newlines(self):
+        message = "first line\nsecond line\nthird"
+        self.assertEqual("".join(split_message(message)), message)
     def test_sent_moves_next_send(self):
         self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
         row = self.s.schedules()[0]
