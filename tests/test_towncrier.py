@@ -44,8 +44,21 @@ class StoreTests(unittest.TestCase):
             send_message(FakeRadio("", ""), 1, ["first", "second"])
         self.assertEqual(FakeRadio.sent, [(1, "first"), (1, "second")])
         sleep.assert_called_once_with(3)
+    def test_send_message_delays_between_messages_on_each_channel(self):
+        FakeRadio.sent = []
+        with patch("towncrier.engine.time.sleep") as sleep:
+            send_message(FakeRadio("", ""), [1, 3], ["first", "second"])
+        self.assertEqual(FakeRadio.sent, [(1, "first"), (1, "second"), (3, "first"), (3, "second")])
+        self.assertEqual(sleep.call_count, 2)
+    def test_save_waits_until_interval_before_first_send(self):
+        self.s.save({"name":"x","channels":[1],"message":"x","interval":1800})
+        self.assertEqual(self.s.due(now=0), [])
+    def test_multiple_channels_round_trip(self):
+        self.s.save({"name":"x","channels":[1,3],"messages":["a","b"],"interval":1800})
+        self.assertEqual(self.s.schedules()[0]["channels"], [1, 3])
     def test_scheduler_uses_fake_radio_and_advances_after_send(self):
         self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
+        with self.s.connect() as db: db.execute("UPDATE schedules SET next_send=0")
         FakeRadio.sent = []
         with patch("towncrier.engine.Radio", FakeRadio):
             Scheduler(self.s, FakeStop()).run()
