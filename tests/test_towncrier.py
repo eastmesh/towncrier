@@ -38,12 +38,17 @@ class StoreTests(unittest.TestCase):
             db.execute("CREATE TABLE schedules(id INTEGER PRIMARY KEY,name TEXT,channel INTEGER,message TEXT,interval INTEGER,enabled INTEGER,next_send REAL,last_send REAL,last_error TEXT,status TEXT)")
             db.execute("INSERT INTO schedules VALUES(1,'legacy',2,'hello',1800,1,0,NULL,NULL,'waiting')")
         self.assertEqual(Store(path).get(1)["messages"], ["hello"])
-    def test_send_message_delays_between_messages(self):
-        FakeRadio.sent = []
+    def test_message_delay_round_trip(self):
+        self.s.save({"name":"x","channel":1,"message":"x","interval":1800,"message_delay":7})
+        self.assertEqual(self.s.get(1)["message_delay"], 7)
+    def test_send_message_uses_default_delay(self):
         with patch("towncrier.engine.time.sleep") as sleep:
             send_message(FakeRadio("", ""), 1, ["first", "second"])
-        self.assertEqual(FakeRadio.sent, [(1, "first"), (1, "second")])
         sleep.assert_called_once_with(3)
+    def test_send_message_uses_custom_delay(self):
+        with patch("towncrier.engine.time.sleep") as sleep:
+            send_message(FakeRadio("", ""), 1, ["first", "second"], 7)
+        sleep.assert_called_once_with(7)
     def test_send_message_delays_between_messages_on_each_channel(self):
         FakeRadio.sent = []
         with patch("towncrier.engine.time.sleep") as sleep:
