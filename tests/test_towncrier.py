@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from towncrier.db import Store
 from towncrier.app import esc
-from towncrier.engine import Scheduler, split_message
+from towncrier.engine import Scheduler, send_message, split_message
 
 class FakeStop:
     def __init__(self): self.calls = 0
@@ -38,6 +38,12 @@ class StoreTests(unittest.TestCase):
             db.execute("CREATE TABLE schedules(id INTEGER PRIMARY KEY,name TEXT,channel INTEGER,message TEXT,interval INTEGER,enabled INTEGER,next_send REAL,last_send REAL,last_error TEXT,status TEXT)")
             db.execute("INSERT INTO schedules VALUES(1,'legacy',2,'hello',1800,1,0,NULL,NULL,'waiting')")
         self.assertEqual(Store(path).get(1)["messages"], ["hello"])
+    def test_send_message_delays_between_messages(self):
+        FakeRadio.sent = []
+        with patch("towncrier.engine.time.sleep") as sleep:
+            send_message(FakeRadio("", ""), 1, ["first", "second"])
+        self.assertEqual(FakeRadio.sent, [(1, "first"), (1, "second")])
+        sleep.assert_called_once_with(3)
     def test_scheduler_uses_fake_radio_and_advances_after_send(self):
         self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
         FakeRadio.sent = []

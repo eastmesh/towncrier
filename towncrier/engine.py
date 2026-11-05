@@ -2,6 +2,7 @@ import threading,time
 from .radio import Radio
 TARGET_CHARS=120
 MAX_CHUNK=130
+MESSAGE_DELAY=3
 
 def split_message(message):
  words=message.split(); chunks=[]; current=""
@@ -17,8 +18,10 @@ def split_message(message):
  return chunks
 
 def send_message(radio,channel,message):
- for text in ([message] if isinstance(message,str) else message):
+ messages=[message] if isinstance(message,str) else message
+ for index,text in enumerate(messages):
   for chunk in split_message(text): radio.send(channel,chunk)
+  if index+1<len(messages): time.sleep(MESSAGE_DELAY)
 
 class Scheduler(threading.Thread):
  daemon=True
