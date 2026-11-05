@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,14 +23,21 @@ class StoreTests(unittest.TestCase):
         self.s = Store(Path(self.tmp.name) / "x.db")
     def tearDown(self): self.tmp.cleanup()
     def test_round_trip_validation_and_crud(self):
-        self.s.save({"name":"Morning","channel":2,"message":"hello","interval":1800,"enabled":True})
+        self.s.save({"name":"Morning","channel":2,"messages":["hello","world"],"interval":1800,"enabled":True})
         row = self.s.schedules()[0]
         self.assertEqual(row["channel"], 2)
-        self.s.save({"name":"Changed","channel":3,"message":"updated","interval":3600,"enabled":False}, row["id"])
+        self.assertEqual(row["messages"], ["hello", "world"])
+        self.s.save({"name":"Changed","channel":3,"messages":["updated"],"interval":3600,"enabled":False}, row["id"])
         self.assertEqual(self.s.get(row["id"])["name"], "Changed")
         self.s.delete(row["id"])
         self.assertIsNone(self.s.get(row["id"]))
-        with self.assertRaises(ValueError): self.s.save({"name":"x","channel":2,"message":"x","interval":1740})
+        with self.assertRaises(ValueError): self.s.save({"name":"x","channel":2,"messages":[],"interval":1740})
+    def test_legacy_single_message_is_migrated(self):
+        path = Path(self.tmp.name) / "legacy.db"
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE schedules(id INTEGER PRIMARY KEY,name TEXT,channel INTEGER,message TEXT,interval INTEGER,enabled INTEGER,next_send REAL,last_send REAL,last_error TEXT,status TEXT)")
+            db.execute("INSERT INTO schedules VALUES(1,'legacy',2,'hello',1800,1,0,NULL,NULL,'waiting')")
+        self.assertEqual(Store(path).get(1)["messages"], ["hello"])
     def test_scheduler_uses_fake_radio_and_advances_after_send(self):
         self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
         FakeRadio.sent = []

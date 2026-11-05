@@ -17,7 +17,8 @@ def split_message(message):
  return chunks
 
 def send_message(radio,channel,message):
- for chunk in split_message(message): radio.send(channel,chunk)
+ for text in ([message] if isinstance(message,str) else message):
+  for chunk in split_message(text): radio.send(channel,chunk)
 
 class Scheduler(threading.Thread):
  daemon=True
@@ -27,6 +28,6 @@ class Scheduler(threading.Thread):
    rows=self.store.due()
    for row in rows:
     try:
-     send_message(Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")),row["channel"],row["message"]); self.store.sent(row["id"],time.time(),row["interval"])
+     send_message(Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")),row["channel"],row["messages"]); self.store.sent(row["id"],time.time(),row["interval"])
     except Exception as exc: self.store.failed(row["id"],exc)
    self.stop_event.wait(1 if rows else 10)

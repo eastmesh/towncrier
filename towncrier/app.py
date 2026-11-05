@@ -16,7 +16,7 @@ class Handler(BaseHTTPRequestHandler):
   if path=="/health": return self.respond("OK","text/plain")
   self.send_error(404)
  def do_POST(self):
-  form={k:v[0] for k,v in parse_qs(self.rfile.read(int(self.headers.get("Content-Length",0))).decode(),keep_blank_values=True).items()}; path=urlparse(self.path).path
+  parsed=parse_qs(self.rfile.read(int(self.headers.get("Content-Length",0))).decode(),keep_blank_values=True); form={k:v[0] for k,v in parsed.items()}; path=urlparse(self.path).path
   try:
    if path=="/settings": self.store.set_setting("port",form.get("port","/dev/ttyUSB0")); self.store.set_setting("baud",form.get("baud","115200"))
    elif path=="/radio-settings":
@@ -42,18 +42,18 @@ class Handler(BaseHTTPRequestHandler):
    elif path=="/save":
     hours=int(form.get("hours","0")); minutes=int(form.get("minutes","0"))
     if hours<0 or not 0<=minutes<=59: raise ValueError("hours must be non-negative and minutes must be 0-59")
-    self.store.save({"name":form.get("name",""),"channel":form.get("channel",""),"message":form.get("message",""),"interval":hours*3600+minutes*60,"enabled":form.get("enabled")=="on"},form.get("id") or None)
+    self.store.save({"name":form.get("name",""),"channel":form.get("channel",""),"messages":parsed.get("message",[]),"interval":hours*3600+minutes*60,"enabled":form.get("enabled")=="on"},form.get("id") or None)
    elif path=="/delete": self.store.delete(form["id"])
    elif path=="/toggle": self.store.toggle(form["id"])
    elif path=="/send":
     row=self.store.get(form["id"]); from .radio import Radio
     if not row: raise ValueError("schedule not found")
-    send_message(Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")),row["channel"],row["message"])
+    send_message(Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")),row["channel"],row["messages"])
    else: return self.send_error(404)
    self.send_response(303); self.send_header("Location","/"); self.end_headers()
   except Exception as exc: self.page(str(exc))
  def page(self,error=""):
-  rows=self.store.schedules(); q=parse_qs(urlparse(self.path).query); edit=self.store.get(q["edit"][0]) if q.get("edit") else None; e=edit or {"id":"","name":"","channel":0,"message":"","interval":3600,"enabled":1}; hours,minutes=duration_parts(e["interval"])
+  rows=self.store.schedules(); q=parse_qs(urlparse(self.path).query); edit=self.store.get(q["edit"][0]) if q.get("edit") else None; e=edit or {"id":"","name":"","channel":0,"messages":[""],"interval":3600,"enabled":1}; hours,minutes=duration_parts(e["interval"])
   channels=[]; channel_error=""; radio_settings={}; radio_error=""
   try:
    from .radio import Radio
@@ -71,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
   out+='<form class="card" method="post" action="/settings"><h2>USB companion</h2><div class="grid"><label>Serial port <input name="port" value="'+esc(self.store.setting("port","/dev/ttyUSB0"))+'"></label> <label>Baud <input name="baud" type="number" value="'+esc(self.store.setting("baud","115200"))+'"></label></div><button>Save settings</button></form><h2>Schedules</h2><table><tr><th>Name</th><th>Channel</th><th>Interval</th><th>Status</th><th>Actions</th></tr>'
   for r in rows:
    out+='<tr><td>'+esc(r["name"])+'</td><td>'+str(r["channel"])+'</td><td>'+esc(duration_label(r["interval"]))+'</td><td>'+('enabled' if r["enabled"] else 'disabled')+' / '+esc(r["status"] or 'waiting')+' '+esc(r["last_error"] or '')+'</td><td><a href="/?edit='+str(r["id"])+ '">edit</a> <form class="inline" method="post" action="/toggle"><input type="hidden" name="id" value="'+str(r["id"])+ '"><button>toggle</button></form> <form class="inline" method="post" action="/send"><input type="hidden" name="id" value="'+str(r["id"])+ '"><button>send now</button></form> <form class="inline" method="post" action="/delete"><input type="hidden" name="id" value="'+str(r["id"])+ '"><button>delete</button></form></td></tr>'
-  out+='</table><form class="card" method="post" action="/save"><h2>'+('Edit' if e["id"] else 'Add')+' schedule</h2><input type="hidden" name="id" value="'+esc(e["id"])+ '"><label>Name <input required name="name" value="'+esc(e["name"])+ '"></label> <label>Channel index <input required type="number" min="0" max="255" name="channel" value="'+str(e["channel"])+ '"></label> <label>Hours <input required type="number" min="0" name="hours" value="'+str(hours)+ '"></label> <label>Minutes <input required type="number" min="0" max="59" name="minutes" value="'+str(minutes)+ '"></label><br><small>Minimum schedule interval: 30 minutes.</small><br><label>Message <textarea required maxlength="500" name="message">'+esc(e["message"])+ '</textarea></label><br><small>Messages are sent as channel chunks of about 120 characters, never more than 130.</small><br><label><input type="checkbox" name="enabled" '+('checked' if e["enabled"] else '')+ '> enabled</label> <button>Save schedule</button></form></main></body></html>'
+  out+='</table><form class="card" method="post" action="/save"><h2>'+('Edit' if e["id"] else 'Add')+' schedule</h2><input type="hidden" name="id" value="'+esc(e["id"])+ '"><label>Name <input required name="name" value="'+esc(e["name"])+ '"></label> <label>Channel index <input required type="number" min="0" max="255" name="channel" value="'+str(e["channel"])+ '"></label> <label>Hours <input required type="number" min="0" name="hours" value="'+str(hours)+ '"></label> <label>Minutes <input required type="number" min="0" max="59" name="minutes" value="'+str(minutes)+ '"></label><br><small>Minimum schedule interval: 30 minutes.</small><div id="messages">'+''.join('<label>Message <textarea required maxlength="500" name="message">'+esc(message)+'</textarea></label>' for message in e["messages"])+ '</div><button type="button" class="secondary" onclick="addMessage()">Add another message</button><br><small>Messages are sent in order as channel chunks of about 120 characters, never more than 130.</small><br><label><input type="checkbox" name="enabled" '+('checked' if e["enabled"] else '')+ '> enabled</label> <button>Save schedule</button></form><script>function addMessage(){const label=document.createElement("label");label.textContent="Message ";label.innerHTML+="<textarea required maxlength=\\"500\\" name=\\"message\\"></textarea>";document.getElementById("messages").append(label)}</script></main></body></html>'
   self.respond(out)
  def respond(self,body,typ="text/html"):
   data=body.encode(); self.send_response(200); self.send_header("Content-Type",typ+"; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)
