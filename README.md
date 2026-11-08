@@ -149,11 +149,12 @@ Use the **Add schedule** form:
 
 - **Name**: a short label you will recognise, such as `Morning status`.
 - **Channel index**: the numeric MeshCore channel slot, from `0` to `255`. This is the channel index configured on the companion radio, not the channel name.
-- **Hours** and **Minutes**: how often to send the message. The smallest allowed value is 30 minutes. For once per hour, enter `0` hours and `60` is not valid; instead enter `1` hour and `0` minutes. Minutes must be from `0` to `59`.
-- **Message**: the text to send. Messages may contain up to 500 characters. Towncrier automatically sends long messages as multiple channel messages, aiming for about 120 characters per part and never exceeding 130 characters per part. Splitting happens at spaces where possible; very long words are cut safely.
+- **First send time (local)**: the first message is scheduled for this time in the Towncrier computer’s local timezone. If the time has already passed today, it is scheduled for tomorrow. After the first send, the configured interval determines subsequent sends.
+- **Hours** and **Minutes**: how often to send the message after its first send. The smallest allowed value is 30 minutes. For once per hour, enter `1` hour and `0` minutes. Minutes must be from `0` to `59`.
+- **Messages**: add one or more texts (up to 500 characters each). Drag messages to change their send order; the order is saved with the schedule. Towncrier automatically sends long messages as channel chunks, aiming for about 120 characters per part and never exceeding 130 characters per part.
 - **Enabled**: leave checked for the scheduler to send it. Uncheck it when you want to keep the message without sending it.
 
-Click **Save schedule**. The schedule is immediately stored. The first send is due as soon as the scheduler sees it; later sends use the hours-and-minutes interval you entered. Existing schedules created with the older seconds-based interface are raised to the new 30-minute minimum automatically.
+Click **Save schedule**. The schedule table shows the next send date and time for enabled schedules, and “Paused” for disabled schedules. Existing schedules created with the older seconds-based interface are raised to the new 30-minute minimum automatically.
 
 The schedule table shows whether an item is enabled, its last status, and the most recent error. The available actions are:
 

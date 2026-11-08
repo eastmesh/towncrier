@@ -1,4 +1,5 @@
 import sqlite3, threading, time
+from datetime import datetime, timedelta
 MIN_INTERVAL=1800
 MAX_MESSAGE=500
 class Store:
@@ -35,15 +36,25 @@ class Store:
   name=str(data["name"]).strip()[:80]; channel=int(data.get("channel",0)); interval=int(data["interval"]); message_delay=int(data.get("message_delay",3))
   channels=data.get("channels",data.get("channel",[])); channels=[int(c) for c in ([channels] if isinstance(channels,(str,int)) else channels)]
   messages=data.get("messages",data.get("message",[])); messages=[str(m) for m in ([messages] if isinstance(messages,str) else messages) if str(m).strip()]
+  send_at=str(data.get("send_at", ""))
+  if send_at:
+   try: datetime.strptime(send_at,"%H:%M")
+   except ValueError: raise ValueError("send time must use 24-hour HH:MM format")
   if not name or not channels or not all(0<=c<=255 for c in channels) or not messages or not all(1<=len(m)<=MAX_MESSAGE for m in messages) or interval<MIN_INTERVAL or interval%60 or not 0<=message_delay<=3600: raise ValueError("name, channels 0-255, non-empty messages 1-500 chars each, interval of at least 30 minutes, and message delay 0-3600 seconds required")
   channel=channels[0]; enabled=1 if data.get("enabled",True) else 0
   with self.lock,self.connect() as db:
    if ident:
-    ident=int(ident); db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,enabled=?,message_delay=? WHERE id=?",(name,channel,messages[0],interval,enabled,message_delay,ident))
+    ident=int(ident); db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,enabled=?,message_delay=?,next_send=? WHERE id=?",(name,channel,messages[0],interval,enabled,message_delay,self._next_send(send_at,interval),ident))
    else:
-    db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay) VALUES(?,?,?,?,?,?,?,?)",(name,channel,messages[0],interval,enabled,time.time()+interval,"waiting",message_delay)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay) VALUES(?,?,?,?,?,?,?,?)",(name,channel,messages[0],interval,enabled,self._next_send(send_at,interval),"waiting",message_delay)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
    db.execute("DELETE FROM schedule_messages WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_messages(schedule_id,position,message) VALUES(?,?,?)",[(ident,i,message) for i,message in enumerate(messages)])
    db.execute("DELETE FROM schedule_channels WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_channels(schedule_id,position,channel) VALUES(?,?,?)",[(ident,i,c) for i,c in enumerate(channels)])
+ def _next_send(self,send_at,interval):
+  now=datetime.now().astimezone()
+  if not send_at: return time.time()+interval
+  hour,minute=map(int,send_at.split(":")); due=now.replace(hour=hour,minute=minute,second=0,microsecond=0)
+  if due<=now: due+=timedelta(days=1)
+  return due.timestamp()
  def delete(self,ident):
   with self.lock,self.connect() as db: db.execute("DELETE FROM schedules WHERE id=?",(int(ident),))
  def toggle(self,ident):

@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from towncrier.db import Store
@@ -58,6 +59,10 @@ class StoreTests(unittest.TestCase):
     def test_save_waits_until_interval_before_first_send(self):
         self.s.save({"name":"x","channels":[1],"message":"x","interval":1800})
         self.assertEqual(self.s.due(now=0), [])
+    def test_save_uses_configured_local_first_send_time(self):
+        target=(datetime.now().astimezone()+timedelta(hours=2)).replace(second=0,microsecond=0)
+        self.s.save({"name":"x","channels":[1],"message":"x","interval":1800,"send_at":target.strftime("%H:%M")})
+        self.assertAlmostEqual(self.s.get(1)["next_send"],target.timestamp(),delta=60)
     def test_multiple_channels_round_trip(self):
         self.s.save({"name":"x","channels":[1,3],"messages":["a","b"],"interval":1800})
         self.assertEqual(self.s.schedules()[0]["channels"], [1, 3])
