@@ -1,4 +1,5 @@
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -88,5 +89,16 @@ class StoreTests(unittest.TestCase):
         self.s.sent(row["id"], 100, 1800)
         self.assertEqual(self.s.get(row["id"])["next_send"], 1900)
     def test_escape(self): self.assertEqual(esc('<script>'), '&lt;script&gt;')
+
+class InstallerTests(unittest.TestCase):
+    def test_install_restarts_the_service_after_installing_updated_code(self):
+        script=Path(__file__).parents[1].joinpath("install.sh").read_text()
+        self.assertLess(script.index('pip" install "$PREFIX"'), script.index('systemctl restart towncrier'))
+
+    def test_uninstaller_help_documents_database_preservation(self):
+        script=Path(__file__).parents[1]/"uninstall.sh"
+        result=subprocess.run(["bash",str(script),"--help"],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn("/var/lib/towncrier",result.stdout)
 
 if __name__ == "__main__": unittest.main()

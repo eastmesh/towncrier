@@ -251,18 +251,19 @@ id towncrier
 
 The installer adds Towncrier to `dialout` and to the group currently assigned to the configured serial device. Restart Towncrier after group membership changes.
 
-## 11. I want to remove Towncrier
+## 11. Uninstall Towncrier
 
-Stop and disable it first:
+From the cloned repository, run:
 
 ```bash
-sudo systemctl disable --now towncrier
-sudo rm /etc/systemd/system/towncrier.service
-sudo systemctl daemon-reload
-sudo rm -rf /opt/towncrier
+sudo ./uninstall.sh
 ```
 
-The schedules database is kept at `/var/lib/towncrier/towncrier.db` until you remove it explicitly.
+The script stops and disables the service, removes the systemd unit and `/opt/towncrier` application, and reloads systemd. It preserves your schedules and settings in `/var/lib/towncrier` by default. It also retains the `towncrier` service account.
+
+To also remove the schedules and settings, run `sudo ./uninstall.sh --purge-data` and type `DELETE` at the confirmation prompt. This permanently removes `/var/lib/towncrier`.
+
+If you installed with a custom prefix, pass the same prefix, for example `sudo PREFIX=/srv/towncrier ./uninstall.sh`.
 
 ## Development and tests
 

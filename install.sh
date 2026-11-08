@@ -20,5 +20,6 @@ $SUDO sed -e "s|^User=.*|User=$SERVICE_USER|" -e "s|^WorkingDirectory=.*|Working
 $SUDO install -m 0644 /tmp/towncrier.service /etc/systemd/system/towncrier.service
 rm -f /tmp/towncrier.service
 $SUDO systemctl daemon-reload
-$SUDO systemctl enable --now towncrier
+$SUDO systemctl enable towncrier
+$SUDO systemctl restart towncrier || $SUDO systemctl start towncrier
 printf '\nTowncrier is installed and running. Open http://127.0.0.1:8080/ in a browser.\n'
