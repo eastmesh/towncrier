@@ -9,6 +9,8 @@ class Store:
    db.executescript("""CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS schedules(id INTEGER PRIMARY KEY,name TEXT NOT NULL,channel INTEGER NOT NULL CHECK(channel BETWEEN 0 AND 255),message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 500),interval INTEGER NOT NULL CHECK(interval>=60),enabled INTEGER NOT NULL DEFAULT 1,next_send REAL NOT NULL,last_send REAL,last_error TEXT,status TEXT,message_delay INTEGER NOT NULL DEFAULT 3); CREATE TABLE IF NOT EXISTS schedule_messages(id INTEGER PRIMARY KEY,schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,position INTEGER NOT NULL,message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 500),UNIQUE(schedule_id,position)); CREATE TABLE IF NOT EXISTS schedule_channels(id INTEGER PRIMARY KEY,schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,position INTEGER NOT NULL,channel INTEGER NOT NULL CHECK(channel BETWEEN 0 AND 255),UNIQUE(schedule_id,position)); INSERT INTO schedule_messages(schedule_id,position,message) SELECT id,0,message FROM schedules WHERE NOT EXISTS (SELECT 1 FROM schedule_messages WHERE schedule_id=schedules.id); INSERT INTO schedule_channels(schedule_id,position,channel) SELECT id,0,channel FROM schedules WHERE NOT EXISTS (SELECT 1 FROM schedule_channels WHERE schedule_id=schedules.id);""")
    try: db.execute("ALTER TABLE schedules ADD COLUMN message_delay INTEGER NOT NULL DEFAULT 3")
    except sqlite3.OperationalError: pass
+   try: db.execute("ALTER TABLE schedules ADD COLUMN send_at TEXT NOT NULL DEFAULT ''")
+   except sqlite3.OperationalError: pass
    db.execute("UPDATE schedules SET interval=? WHERE interval<?",(MIN_INTERVAL,MIN_INTERVAL))
  def connect(self):
   db=sqlite3.connect(self.path,timeout=10); db.row_factory=sqlite3.Row; db.execute("PRAGMA foreign_keys=ON"); return db
@@ -44,16 +46,17 @@ class Store:
   channel=channels[0]; enabled=1 if data.get("enabled",True) else 0
   with self.lock,self.connect() as db:
    if ident:
-    ident=int(ident); db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,enabled=?,message_delay=?,next_send=? WHERE id=?",(name,channel,messages[0],interval,enabled,message_delay,self._next_send(send_at,interval),ident))
+    ident=int(ident); db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,enabled=?,message_delay=?,send_at=? WHERE id=?",(name,channel,messages[0],interval,enabled,message_delay,send_at,ident))
    else:
-    db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay) VALUES(?,?,?,?,?,?,?,?)",(name,channel,messages[0],interval,enabled,self._next_send(send_at,interval),"waiting",message_delay)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay,send_at) VALUES(?,?,?,?,?,?,?,?,?)",(name,channel,messages[0],interval,enabled,self._next_send(send_at,interval),"waiting",message_delay,send_at)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
    db.execute("DELETE FROM schedule_messages WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_messages(schedule_id,position,message) VALUES(?,?,?)",[(ident,i,message) for i,message in enumerate(messages)])
    db.execute("DELETE FROM schedule_channels WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_channels(schedule_id,position,channel) VALUES(?,?,?)",[(ident,i,c) for i,c in enumerate(channels)])
  def _next_send(self,send_at,interval):
   now=datetime.now().astimezone()
-  if not send_at: return time.time()+interval
-  hour,minute=map(int,send_at.split(":")); due=now.replace(hour=hour,minute=minute,second=0,microsecond=0)
-  if due<=now: due+=timedelta(days=1)
+  due=now+timedelta(seconds=interval)
+  if not send_at: return due.timestamp()
+  hour,minute=map(int,send_at.split(":")); due=due.replace(hour=hour,minute=minute)
+  if due < now+timedelta(seconds=interval): due+=timedelta(days=1)
   return due.timestamp()
  def delete(self,ident):
   with self.lock,self.connect() as db: db.execute("DELETE FROM schedules WHERE id=?",(int(ident),))

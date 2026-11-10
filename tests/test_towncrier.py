@@ -47,7 +47,10 @@ class StoreTests(unittest.TestCase):
         with sqlite3.connect(path) as db:
             db.execute("CREATE TABLE schedules(id INTEGER PRIMARY KEY,name TEXT,channel INTEGER,message TEXT,interval INTEGER,enabled INTEGER,next_send REAL,last_send REAL,last_error TEXT,status TEXT)")
             db.execute("INSERT INTO schedules VALUES(1,'legacy',2,'hello',1800,1,0,NULL,NULL,'waiting')")
-        self.assertEqual(Store(path).get(1)["messages"], ["hello"])
+        migrated=Store(path).get(1)
+        assert migrated is not None
+        self.assertEqual(migrated["messages"], ["hello"])
+        self.assertEqual(migrated["send_at"], "")
     def test_message_delay_round_trip(self):
         self.s.save({"name":"x","channel":1,"message":"x","interval":1800,"message_delay":7})
         self.assertEqual(self.s.get(1)["message_delay"], 7)
@@ -72,6 +75,30 @@ class StoreTests(unittest.TestCase):
         target=(datetime.now().astimezone()+timedelta(hours=2)).replace(second=0,microsecond=0)
         self.s.save({"name":"x","channels":[1],"message":"x","interval":1800,"send_at":target.strftime("%H:%M")})
         self.assertAlmostEqual(self.s.get(1)["next_send"],target.timestamp(),delta=60)
+    def test_send_time_waits_one_full_interval_before_first_send(self):
+        local_zone=datetime.now().astimezone().tzinfo
+        fixed_now=datetime(2026,11,11,7,22,tzinfo=local_zone)
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls,tz=None): return fixed_now if tz is None else fixed_now.astimezone(tz)
+        with patch("towncrier.db.datetime",FrozenDateTime), patch("towncrier.db.time.time",return_value=fixed_now.timestamp()):
+            self.s.save({"name":"x","channels":[1],"message":"x","interval":72*3600,"send_at":"09:00"})
+        row=self.s.get(1)
+        assert row is not None
+        due_local=datetime.fromtimestamp(row["next_send"]).astimezone()
+        self.assertGreaterEqual(row["next_send"],fixed_now.timestamp()+72*3600)
+        self.assertEqual(due_local.strftime("%H:%M"),"09:00")
+        self.assertEqual(due_local.date(),(fixed_now+timedelta(hours=72)).date())
+    def test_edit_keeps_next_send_timestamp(self):
+        self.s.save({"name":"x","channels":[1],"message":"x","interval":72*3600})
+        original=self.s.get(1)
+        assert original is not None
+        original_next_send=original["next_send"]
+        self.s.save({"name":"updated","channels":[1],"message":"updated","interval":72*3600,"send_at":"09:00"},1)
+        updated=self.s.get(1)
+        assert updated is not None
+        self.assertEqual(updated["next_send"],original_next_send)
+        self.assertEqual(updated["send_at"],"09:00")
     def test_multiple_channels_round_trip(self):
         self.s.save({"name":"x","channels":[1,3],"messages":["a","b"],"interval":1800})
         self.assertEqual(self.s.schedules()[0]["channels"], [1, 3])
@@ -172,8 +199,10 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('message-editor-panel',page)
         self.assertIn('class="schedule-settings-rail"',page)
         self.assertIn('Load a schedule',page)
+        self.assertIn('Send time (local)',page)
+        self.assertIn('Editing keeps the current next post time.',page)
 
-    def test_repeated_message_fields_preserve_submission_order(self):
+    def test_save_edit_preserves_next_post_time_and_message_order(self):
         import urllib.parse
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
         store=Store(Path(tmp.name)/"messages-order.db"); Handler.store=store
@@ -184,10 +213,21 @@ class WebUiTests(unittest.TestCase):
         try:
             with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
                 with urllib.request.urlopen(request): pass
-            saved=store.schedules()[0]["messages"]
+                created=store.get(1)
+                assert created is not None
+                original_next_send=created["next_send"]
+                saved_messages=created["messages"]
+                edit_fields=[("id","1"),("name","Edited"),("channel","0"),("send_at","10:00"),("hours","0"),("minutes","30"),("message_delay","3"),("message","updated"),("enabled","on")]
+                edit_request=Request(f"http://127.0.0.1:{server.server_port}/save",data=urllib.parse.urlencode(edit_fields).encode(),headers={"Content-Type":"application/x-www-form-urlencoded"})
+                with urlopen(edit_request): pass
+            updated=store.get(1)
+            assert updated is not None
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
-        self.assertEqual(saved,["second","first"])
+        self.assertEqual(saved_messages,["second","first"])
+        self.assertEqual(updated["messages"],["updated"])
+        self.assertEqual(updated["next_send"],original_next_send)
+        self.assertEqual(updated["send_at"],"10:00")
 
     def test_tcp_connection_settings_are_saved_and_validated(self):
         import urllib.parse

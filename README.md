@@ -149,12 +149,12 @@ Use the **Add schedule** form:
 
 - **Name**: a short label you will recognise, such as `Morning status`.
 - **Channel index**: the numeric MeshCore channel slot, from `0` to `255`. This is the channel index configured on the companion radio, not the channel name.
-- **First send time (local)**: the first message is scheduled for this time in the Towncrier computer’s local timezone. If the time has already passed today, it is scheduled for tomorrow. After the first send, the configured interval determines subsequent sends.
-- **Hours** and **Minutes**: how often to send the message after its first send. The smallest allowed value is 30 minutes. For once per hour, enter `1` hour and `0` minutes. Minutes must be from `0` to `59`.
+- **Send time (local)**: anchors the first post to a local clock time, but it will not be scheduled earlier than one full interval after saving. After the first post, Towncrier follows the exact interval from each successful send.
+- **Hours** and **Minutes**: the exact interval between posts after the first one. The smallest allowed value is 30 minutes. For once per hour, enter `1` hour and `0` minutes. Minutes must be from `0` to `59`.
 - **Messages**: add one or more texts (up to 500 characters each). Use the `+` and `−` buttons and up/down arrows beside each message, or drag messages, to set their send order; the order is saved with the schedule. Towncrier automatically sends long messages as channel chunks, aiming for about 120 characters per part and never exceeding 130 characters per part.
 - **Enabled**: leave checked for the scheduler to send it. Uncheck it when you want to keep the message without sending it.
 
-Click **Save schedule**. The schedule table shows the next send date and time for enabled schedules, and “Paused” for disabled schedules. Existing schedules created with the older seconds-based interface are raised to the new 30-minute minimum automatically.
+Click **Save schedule**. The schedule table shows the next send date and time for enabled schedules, and “Paused” for disabled schedules. Editing a schedule keeps its existing next-send timestamp; an updated interval applies after that post. Existing schedules created with the older seconds-based interface are raised to the new 30-minute minimum automatically.
 
 The schedule table shows whether an item is enabled, its last status, and the most recent error. The available actions are:
 
