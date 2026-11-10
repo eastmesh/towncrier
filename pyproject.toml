@@ -11,3 +11,5 @@ dependencies = ["meshcore>=2.2.0"]
 towncrier = "towncrier.app:main"
 [tool.setuptools.packages.find]
 include = ["towncrier*"]
+[tool.setuptools.package-data]
+towncrier = ["static/*", "static/assets/*", "static/vendor/*"]

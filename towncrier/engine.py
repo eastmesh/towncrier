@@ -45,6 +45,6 @@ class Scheduler(threading.Thread):
    rows=self.store.due()
    for row in rows:
     try:
-     send_message(Radio(self.store.setting("port","/dev/ttyUSB0"),self.store.setting("baud","115200")),row["channels"],row["messages"],row["message_delay"]); self.store.sent(row["id"],time.time(),row["interval"])
+     send_message(Radio.from_store(self.store),row["channels"],row["messages"],row["message_delay"]); self.store.sent(row["id"],time.time(),row["interval"])
     except Exception as exc: self.store.failed(row["id"],exc)
    self.stop_event.wait(1 if rows else 10)

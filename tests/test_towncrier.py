@@ -1,12 +1,18 @@
+import json
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from urllib.request import Request, urlopen
 from datetime import datetime, timedelta
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 from towncrier.db import Store
-from towncrier.app import esc
+from towncrier.app import esc, Handler
 from towncrier.engine import Scheduler, send_message, split_message
 
 class FakeStop:
@@ -17,6 +23,8 @@ class FakeStop:
 class FakeRadio:
     sent = []
     def __init__(self, port, baud): pass
+    @classmethod
+    def from_store(cls, store): return cls(store.setting("port","/dev/ttyUSB0"),store.setting("baud","115200"))
     def send(self, channel, message): self.sent.append((channel, message))
 
 class StoreTests(unittest.TestCase):
@@ -89,6 +97,286 @@ class StoreTests(unittest.TestCase):
         self.s.sent(row["id"], 100, 1800)
         self.assertEqual(self.s.get(row["id"])["next_send"], 1900)
     def test_escape(self): self.assertEqual(esc('<script>'), '&lt;script&gt;')
+
+class WebUiTests(unittest.TestCase):
+    def test_publisher_page_contains_composer_and_room_auth_controls(self):
+        page=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
+        for control in ('id="messages"','id="sendButton"','id="roomPassword"','id="previewDialog"','id="saveDialog"','id="loadDialog"'):
+            self.assertIn(control,page)
+
+    def test_publisher_composer_has_per_message_add_delete_and_order_controls(self):
+        root=Path(__file__).parents[1]/"towncrier/static"
+        page=(root/"publisher.html").read_text()
+        source=(root/"publisher.js").read_text()
+        self.assertNotIn('id="addButton"',page)
+        for label in ("Add message below","Remove this message","Move message up","Move message down"):
+            self.assertIn(label,source)
+
+    def test_static_routes_reject_path_traversal(self):
+        from towncrier.app import Handler
+        self.assertTrue((Path(__file__).parents[1]/"towncrier/static/publisher.bundle.js").is_file())
+
+    def test_scheduler_has_publisher_tab(self):
+        import inspect
+        self.assertIn('href="/publisher"',inspect.getsource(Handler.page))
+
+    def test_radio_settings_are_a_separate_themed_tab(self):
+        tmp=tempfile.TemporaryDirectory()
+        old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"ui.db")
+        channels=[{"index":i,"name":"","configured":False} for i in range(5)]
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({"radio_freq":915.8},channels)):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/") as response:
+                    scheduler=response.read().decode()
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/radio") as response:
+                    radio=response.read().decode()
+            publisher=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        for page in (scheduler,radio,publisher):
+            self.assertIn('href="/radio"',page)
+            self.assertIn('href="/publisher.css"',page)
+            self.assertIn('class="brand-logo"',page)
+        self.assertNotIn('action="/radio-settings"',scheduler)
+        self.assertIn('class="active" href="/radio"',radio)
+        self.assertIn('action="/radio-settings"',radio)
+        self.assertIn('action="/channel-save"',radio)
+        self.assertIn('action="/settings"',radio)
+        self.assertIn('name="connection_type"',radio)
+        self.assertIn('value="tcp"',radio)
+        self.assertIn('name="tcp_host"',radio)
+        self.assertIn('name="tcp_port"',radio)
+
+    def test_scheduler_message_rows_have_inline_order_controls(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"messages-ui.db"); Handler.store=store
+        store.save({"name":"Pair","channels":[0],"messages":["first","second"],"interval":1800,"message_delay":3})
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        channels=[{"index":i,"name":"","configured":False} for i in range(5)]
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},channels)):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/?edit=1") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertEqual(page.count('aria-posinset='),2)
+        self.assertIn('aria-label="Add message below"',page)
+        self.assertIn('aria-label="Remove this message"',page)
+        self.assertIn('aria-label="Move message up"',page)
+        self.assertIn('aria-label="Move message down"',page)
+        self.assertIn('class="towncrier-workspace"',page)
+        self.assertIn('message-editor-panel',page)
+        self.assertIn('class="schedule-settings-rail"',page)
+        self.assertIn('Load a schedule',page)
+
+    def test_repeated_message_fields_preserve_submission_order(self):
+        import urllib.parse
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"messages-order.db"); Handler.store=store
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        fields=[("name","Ordered"),("channel","0"),("send_at","09:00"),("hours","0"),("minutes","30"),("message_delay","3"),("message","second"),("message","first"),("enabled","on")]
+        request=urllib.request.Request(f"http://127.0.0.1:{server.server_port}/save",data=urllib.parse.urlencode(fields).encode(),headers={"Content-Type":"application/x-www-form-urlencoded"})
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
+                with urllib.request.urlopen(request): pass
+            saved=store.schedules()[0]["messages"]
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertEqual(saved,["second","first"])
+
+    def test_tcp_connection_settings_are_saved_and_validated(self):
+        import urllib.parse
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"tcp-settings.db"); Handler.store=store
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        base=f"http://127.0.0.1:{server.server_port}"
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
+                for port in ("5000","65536"):
+                    data=urllib.parse.urlencode({"connection_type":"tcp","tcp_host":"mesh.local","tcp_port":port,"port":"/dev/ttyUSB0","baud":"115200"}).encode()
+                    request=Request(base+"/settings",data=data,headers={"Content-Type":"application/x-www-form-urlencoded"})
+                    with urlopen(request) as response:
+                        result=response.read().decode()
+                        final_url=response.geturl()
+                    if port=="65536":
+                        self.assertTrue(final_url.endswith("/settings"))
+                        self.assertIn("TCP port must be between 1 and 65535",result)
+                        self.assertEqual(store.setting("tcp_port"),"5000")
+                    else:
+                        self.assertTrue(final_url.endswith("/radio"))
+                        self.assertEqual(store.setting("tcp_port"),"5000")
+            self.assertEqual(store.setting("connection_type"),"tcp")
+            self.assertEqual(store.setting("tcp_host"),"mesh.local")
+            self.assertEqual(store.setting("tcp_port"),"5000")
+            serial_data=urllib.parse.urlencode({"connection_type":"serial","port":"/dev/ttyACM1","baud":"57600"}).encode()
+            serial_request=Request(base+"/settings",data=serial_data,headers={"Content-Type":"application/x-www-form-urlencoded"})
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
+                with urlopen(serial_request) as response: self.assertTrue(response.geturl().endswith("/radio"))
+            self.assertEqual(store.setting("connection_type"),"serial")
+            self.assertEqual(store.setting("port"),"/dev/ttyACM1")
+            self.assertEqual(store.setting("baud"),"57600")
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+
+class PublisherRadioTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.radio = __import__("towncrier.radio", fromlist=["Radio"]).Radio("/dev/test", 115200)
+
+    def tearDown(self): self.tmp.cleanup()
+
+    def test_lists_only_room_server_contacts(self):
+        from types import SimpleNamespace
+        from towncrier.radio import Radio
+        class EventType: ERROR = "error"
+        class Commands:
+            async def get_contacts(self): return SimpleNamespace(type="contacts")
+        class Mesh:
+            commands=Commands()
+            contacts={"a"*64:{"public_key":"a"*64,"type":3,"adv_name":"Room A"},"b"*64:{"public_key":"b"*64,"type":2,"adv_name":"Repeater"}}
+            async def disconnect(self): pass
+        mesh=Mesh()
+        async def connect(_radio): return mesh
+        with patch("towncrier.radio.Radio._connect", new=connect), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
+            self.assertEqual(Radio("/dev/test",115200).publisher_contacts(),[{"publicKeyHex":"a"*64,"name":"Room A"}])
+
+    def test_publisher_login_requires_login_success_event(self):
+        from types import SimpleNamespace
+        from towncrier.radio import Radio
+        class EventType: ERROR="error"; LOGIN_SUCCESS="login_success"; LOGIN_FAILED="login_failed"
+        class Dispatcher:
+            def __init__(self): self.subscriptions=[]
+            def subscribe(self,event_type,callback):
+                entry=[event_type,callback]; self.subscriptions.append(entry)
+                return SimpleNamespace(unsubscribe=lambda:self.subscriptions.remove(entry))
+            def emit(self,event):
+                for event_type,callback in list(self.subscriptions):
+                    if event_type==event.type: callback(event)
+        class Commands:
+            async def get_contacts(self): return SimpleNamespace(type="contacts")
+            async def send_login(self, contact, password):
+                self.called=(contact,password)
+                self.dispatcher.emit(SimpleNamespace(type="login_success",attributes={"pubkey_prefix":"a"*12},payload={"permissions":2}))
+                return SimpleNamespace(type="message_sent",payload={"suggested_timeout":1000})
+        class Mesh:
+            dispatcher=Dispatcher(); commands=Commands(); contacts={"a"*64:{"public_key":"a"*64,"type":3,"adv_name":"Room A"}}
+            commands.dispatcher=dispatcher
+            async def disconnect(self): pass
+        mesh=Mesh()
+        async def connect(_radio): return mesh
+        with patch("towncrier.radio.Radio._connect", new=connect), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
+            result=Radio("/dev/test",115200).publisher_login("a"*64,"secret")
+        self.assertEqual(result,{"permissions":2})
+        self.assertEqual(mesh.commands.called,(mesh.contacts["a"*64],"secret"))
+        with patch("towncrier.radio.Radio._connect",side_effect=AssertionError("should not open radio")), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
+            with self.assertRaisesRegex(ValueError,"15 UTF-8 bytes"):
+                Radio("/dev/test",115200).publisher_login("a"*64,"é"*8)
+
+    def test_publisher_send_uses_room_key_and_checks_utf8_limit(self):
+        from types import SimpleNamespace
+        from towncrier.radio import Radio
+        class EventType: ERROR="error"; MSG_SENT="message_sent"
+        class Commands:
+            async def send_msg(self,key,text): self.sent=(key,text); return SimpleNamespace(type="message_sent",payload={"type":0})
+        class Mesh:
+            commands=Commands()
+            async def disconnect(self): pass
+        mesh=Mesh()
+        async def connect(_radio): return mesh
+        with patch("towncrier.radio.Radio._connect", new=connect), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
+            self.assertEqual(Radio("/dev/test",115200).publisher_send("c"*64,"hello"),{"sent":True})
+            self.assertEqual(mesh.commands.sent,("c"*64,"hello"))
+            with self.assertRaisesRegex(ValueError,"151 UTF-8 bytes"):
+                Radio("/dev/test",115200).publisher_send("c"*64,"é"*76)
+
+
+class RadioTcpTests(unittest.TestCase):
+    def test_tcp_transport_calls_meshcore_factory(self):
+        import asyncio
+        from types import SimpleNamespace
+        from towncrier.radio import Radio
+        calls=[]; client=object()
+        class MeshCore:
+            @staticmethod
+            async def create_tcp(host,port):
+                calls.append((host,port)); return client
+            @staticmethod
+            async def create_serial(*args): raise AssertionError("TCP mode must not open serial")
+        with patch.dict("sys.modules",{"meshcore":SimpleNamespace(MeshCore=MeshCore)}):
+            result=asyncio.run(Radio("/dev/unused",115200,transport="tcp",host="192.168.1.50",tcp_port=4000)._connect())
+        self.assertIs(result,client)
+        self.assertEqual(calls,[("192.168.1.50",4000)])
+
+    def test_from_store_restores_tcp_settings(self):
+        from towncrier.radio import Radio
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/"settings.db")
+            store.set_setting("connection_type","tcp"); store.set_setting("tcp_host","mesh.local"); store.set_setting("tcp_port","5000")
+            radio=Radio.from_store(store)
+        self.assertEqual((radio.transport,radio.host,radio.tcp_port),("tcp","mesh.local",5000))
+
+
+class PublisherApiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        Handler.store=Store(Path(self.tmp.name)/"api.db")
+        Handler.publisher_sessions.clear()
+        self.server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True)
+        self.thread.start()
+        self.base=f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown(); self.thread.join(); self.server.server_close(); self.tmp.cleanup()
+
+    def request(self,path,method="GET",payload=None,cookie=None,content_type="application/json"):
+        data=json.dumps(payload).encode() if payload is not None else None
+        headers={}
+        if data is not None: headers["Content-Type"]=content_type
+        if cookie: headers["Cookie"]=cookie
+        req=urllib.request.Request(self.base+path,data=data,headers=headers,method=method)
+        try:
+            with urllib.request.urlopen(req) as response: return response.status,response.headers,json.loads(response.read())
+        except urllib.error.HTTPError as error: return error.code,error.headers,json.loads(error.read())
+
+    def test_contacts_endpoint_uses_configured_radio_backend(self):
+        expected=[{"publicKeyHex":"a"*64,"name":"Room"}]
+        with patch("towncrier.radio.Radio.publisher_contacts",return_value=expected):
+            status,_,body=self.request("/publisher-api/contacts")
+        self.assertEqual(status,200)
+        self.assertEqual(body,{"rooms":expected})
+
+    def test_login_cookie_is_required_and_bound_to_room_before_publishing(self):
+        key="b"*64
+        with patch("towncrier.radio.Radio.publisher_login",return_value={"permissions":2}) as login, patch("towncrier.radio.Radio.publisher_send",return_value={"sent":True}) as send:
+            status,headers,body=self.request("/publisher-api/login","POST",{"public_key":key,"password":"secret"})
+            self.assertEqual((status,body),(200,{"permissions":2}))
+            self.assertIn("HttpOnly",headers.get("Set-Cookie"))
+            token=headers.get("Set-Cookie").split(";",1)[0]
+            self.assertEqual(self.request("/publisher-api/publish","POST",{"public_key":key,"text":"x"})[0],401)
+            self.assertEqual(self.request("/publisher-api/publish","POST",{"public_key":"c"*64,"text":"x"},token)[0],401)
+            status,_,body=self.request("/publisher-api/publish","POST",{"public_key":key,"text":"hello"},token)
+        self.assertEqual((status,body),(200,{"sent":True}))
+        login.assert_called_once()
+        send.assert_called_once_with(key,"hello")
+
+    def test_publisher_tab_exposes_room_flow_but_no_browser_radio_chooser(self):
+        html=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
+        source=(Path(__file__).parents[1]/"towncrier/static/vendor/publisher.js").read_text()
+        self.assertIn('href="/"',html)
+        self.assertIn('href="/publisher"',html)
+        self.assertIn('already configured in Towncrier',html)
+        self.assertNotIn('id="usbButton"',html)
+        self.assertNotIn('id="bluetoothButton"',html)
+        self.assertNotIn('navigator.serial',source)
+        self.assertNotIn('navigator.bluetooth',source)
+
 
 class InstallerTests(unittest.TestCase):
     def test_install_restarts_the_service_after_installing_updated_code(self):

@@ -1,12 +1,12 @@
 # Towncrier
 
-Towncrier schedules messages to MeshCore **channels** through a USB-connected companion radio. It runs as a Linux background service and has a simple web page for setup.
+Towncrier schedules messages to MeshCore **channels** and includes a MeshPage Publisher for room servers. Both use the same configured radio connection. The Linux web app has separate **Scheduler**, **MeshPage Publisher**, and **Radio Settings** tabs.
 
 This guide assumes this is your first time using a Linux desktop and a terminal.
 
 ![Towncrier setup page](docs/screenshots/towncrier-overview.png)
 
-*The page is split into simple sections: radio settings, channels, USB connection, and schedules.*
+*The app separates scheduled messages, room publishing, and shared radio settings into tabs.*
 
 ## What you need
 
@@ -84,13 +84,13 @@ Replace `192.168.1.25` with the address shown on your computer. If a firewall is
 
 ## 4. Find the USB serial device
 
-The radio usually appears as `/dev/ttyUSB0` or `/dev/ttyACM0`. To see possible device names, return to the terminal and run:
+For a serial/USB connection, the radio usually appears as `/dev/ttyUSB0` or `/dev/ttyACM0`. To see possible device names, return to the terminal and run:
 
 ```bash
 ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 ```
 
-If you see one device, enter that exact name in the **Serial port** box on the Towncrier page. If you see no device:
+If you see one device, enter that exact name in **Radio Settings → Serial device**. For a TCP companion, choose **TCP companion** and enter its host and port instead. If a serial radio is selected but no device appears:
 
 - Check that the USB cable carries data, not only power.
 - Unplug and reconnect the radio.
@@ -106,12 +106,12 @@ sudo systemctl restart towncrier
 
 ## 5. Configure the radio
 
-On the Towncrier page, the **USB companion** section contains:
+Open the **Radio Settings** tab and select **Serial / USB companion**. Its connection form contains:
 
-- **Serial port**: the device path, for example `/dev/ttyUSB0`.
-- **Baud**: normally `115200`. Only change this if your companion radio documentation specifies another value.
+- **Serial device**: the device path, for example `/dev/ttyUSB0`.
+- **Baud rate**: normally `115200`. Only change this if your companion radio documentation specifies another value.
 
-Click **Save settings**. The settings are stored in `/var/lib/towncrier/towncrier.db` and remain after a reboot.
+For a TCP companion, select **TCP companion** and enter the companion host/IP and port. Click **Save connection settings**. The connection settings are shared by Scheduler and MeshPage Publisher, stored in `/var/lib/towncrier/towncrier.db`, and remain after a reboot.
 
 ### Choose a radio preset
 
@@ -151,7 +151,7 @@ Use the **Add schedule** form:
 - **Channel index**: the numeric MeshCore channel slot, from `0` to `255`. This is the channel index configured on the companion radio, not the channel name.
 - **First send time (local)**: the first message is scheduled for this time in the Towncrier computer’s local timezone. If the time has already passed today, it is scheduled for tomorrow. After the first send, the configured interval determines subsequent sends.
 - **Hours** and **Minutes**: how often to send the message after its first send. The smallest allowed value is 30 minutes. For once per hour, enter `1` hour and `0` minutes. Minutes must be from `0` to `59`.
-- **Messages**: add one or more texts (up to 500 characters each). Drag messages to change their send order; the order is saved with the schedule. Towncrier automatically sends long messages as channel chunks, aiming for about 120 characters per part and never exceeding 130 characters per part.
+- **Messages**: add one or more texts (up to 500 characters each). Use the `+` and `−` buttons and up/down arrows beside each message, or drag messages, to set their send order; the order is saved with the schedule. Towncrier automatically sends long messages as channel chunks, aiming for about 120 characters per part and never exceeding 130 characters per part.
 - **Enabled**: leave checked for the scheduler to send it. Uncheck it when you want to keep the message without sending it.
 
 Click **Save schedule**. The schedule table shows the next send date and time for enabled schedules, and “Paused” for disabled schedules. Existing schedules created with the older seconds-based interface are raised to the new 30-minute minimum automatically.
@@ -275,4 +275,4 @@ python3 -m venv .venv
 .venv/bin/python -m towncrier --db /tmp/towncrier.db
 ```
 
-The first version supports USB serial only. BLE, TCP, multi-user authentication, cloud hosting, and public network exposure are intentionally out of scope.
+Towncrier supports serial/USB and TCP companion connections. BLE, multi-user authentication, cloud hosting, and public network exposure are out of scope. MeshPage Publisher shares Towncrier’s configured radio; the web app has no login, so use it only on a trusted private network.
