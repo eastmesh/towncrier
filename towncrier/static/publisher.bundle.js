@@ -2354,7 +2354,7 @@ function renderMessages(values = [""]) {
       moveMessage(i, i + 1);
       messagesEl.querySelectorAll(".message")[i + 1]?.querySelector('[data-action="down"]')?.focus({ preventScroll: true });
     };
-    controls.append(add, remove, up, down);
+    controls.append(remove, up, down, add);
     field.append(ta, picker);
     editorBody.append(field, controls);
     editor.append(toolbar, editorBody);

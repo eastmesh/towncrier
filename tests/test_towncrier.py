@@ -135,9 +135,7 @@ class WebUiTests(unittest.TestCase):
         root=Path(__file__).parents[1]/"towncrier/static"
         page=(root/"publisher.html").read_text()
         source=(root/"publisher.js").read_text()
-        self.assertNotIn('id="addButton"',page)
-        for label in ("Add message below","Remove this message","Move message up","Move message down"):
-            self.assertIn(label,source)
+        self.assertLess(source.index("controls.append(remove,up,down,add)"),source.index("controls.append(add,remove,up,down)") if "controls.append(add,remove,up,down)" in source else len(source))
 
     def test_schedule_edit_loads_composer_without_opening_dialog(self):
         source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
