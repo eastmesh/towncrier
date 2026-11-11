@@ -142,6 +142,11 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("Scheduled sequence loaded.",source)
         self.assertNotIn("scheduleSave').textContent='Save changes';$('scheduleDialog').showModal()",source)
 
+    def test_message_controls_preserve_live_textarea_values(self):
+        source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
+        self.assertIn("const next=[...messageValues()];next.splice(i+1,0,'')",source)
+        self.assertIn("const next=messageValues().filter((_,n)=>n!==i)",source)
+
     def test_static_routes_reject_path_traversal(self):
         from towncrier.app import Handler
         self.assertTrue((Path(__file__).parents[1]/"towncrier/static/publisher.bundle.js").is_file())

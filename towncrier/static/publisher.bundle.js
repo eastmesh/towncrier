@@ -2332,7 +2332,7 @@ function renderMessages(values = [""]) {
     };
     const add = makeControl("add", "Add message below", "+");
     add.onclick = () => {
-      const next = [...values];
+      const next = [...messageValues()];
       next.splice(i + 1, 0, "");
       renderMessages(next);
       messagesEl.querySelectorAll(".message textarea")[i + 1]?.focus();
@@ -2340,7 +2340,7 @@ function renderMessages(values = [""]) {
     const remove = makeControl("remove", "Remove this message", "\u2212", values.length === 1);
     remove.onclick = () => {
       if (values.length === 1) return;
-      const next = values.filter((_, n) => n !== i);
+      const next = messageValues().filter((_, n) => n !== i);
       renderMessages(next);
       messagesEl.querySelectorAll(".message textarea")[Math.min(i, next.length - 1)]?.focus();
     };
