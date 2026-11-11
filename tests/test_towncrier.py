@@ -139,6 +139,11 @@ class WebUiTests(unittest.TestCase):
         for label in ("Add message below","Remove this message","Move message up","Move message down"):
             self.assertIn(label,source)
 
+    def test_schedule_edit_loads_composer_without_opening_dialog(self):
+        source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
+        self.assertIn("Scheduled sequence loaded.",source)
+        self.assertNotIn("scheduleSave').textContent='Save changes';$('scheduleDialog').showModal()",source)
+
     def test_static_routes_reject_path_traversal(self):
         from towncrier.app import Handler
         self.assertTrue((Path(__file__).parents[1]/"towncrier/static/publisher.bundle.js").is_file())

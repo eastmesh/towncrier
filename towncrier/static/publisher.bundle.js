@@ -2598,6 +2598,7 @@ function buildScheduleDialog() {
   return dialog;
 }
 var editingScheduleId = null;
+var editingScheduleChannels = [];
 async function loadScheduleChannels(selected2 = []) {
   const select = $("scheduleChannels");
   select.replaceChildren();
@@ -2616,7 +2617,7 @@ async function loadScheduleChannels(selected2 = []) {
 async function openScheduleDialog() {
   buildScheduleDialog();
   $("scheduleError").textContent = "";
-  await loadScheduleChannels();
+  await loadScheduleChannels(editingScheduleId ? editingScheduleChannels : []);
   $("scheduleName").value = editingScheduleId ? $("scheduleName").value : "New schedule";
   $("scheduleDialogTitle").textContent = editingScheduleId ? "Edit schedule" : "Add to schedule";
   $("scheduleSave").textContent = editingScheduleId ? "Save changes" : "Save schedule";
@@ -2663,6 +2664,7 @@ async function loadScheduleForComposer() {
   try {
     const schedule = await publisher.request(`schedule?id=${encodeURIComponent(scheduleId)}`);
     editingScheduleId = schedule.id;
+    editingScheduleChannels = schedule.channels || [];
     renderMessages(schedule.messages);
     $("delayInput").value = Math.max(1, schedule.message_delay || 2);
     buildScheduleDialog();
@@ -2674,7 +2676,7 @@ async function loadScheduleForComposer() {
     await loadScheduleChannels(schedule.channels);
     $("scheduleDialogTitle").textContent = "Edit scheduled sequence";
     $("scheduleSave").textContent = "Save changes";
-    $("scheduleDialog").showModal();
+    $("sendStatus").textContent = "Scheduled sequence loaded. Review or edit the messages, then choose Add to schedule to save changes.";
   } catch (error) {
     $("sendStatus").textContent = `Could not load schedule: ${error.message}`;
   }
