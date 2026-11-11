@@ -51,6 +51,7 @@ class Store:
     db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay,send_at) VALUES(?,?,?,?,?,?,?,?,?)",(name,channel,messages[0],interval,enabled,self._next_send(send_at,interval),"waiting",message_delay,send_at)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
    db.execute("DELETE FROM schedule_messages WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_messages(schedule_id,position,message) VALUES(?,?,?)",[(ident,i,message) for i,message in enumerate(messages)])
    db.execute("DELETE FROM schedule_channels WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_channels(schedule_id,position,channel) VALUES(?,?,?)",[(ident,i,c) for i,c in enumerate(channels)])
+  return ident
  def _next_send(self,send_at,interval):
   now=datetime.now().astimezone()
   due=now+timedelta(seconds=interval)

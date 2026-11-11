@@ -144,8 +144,24 @@ class WebUiTests(unittest.TestCase):
         self.assertTrue((Path(__file__).parents[1]/"towncrier/static/publisher.bundle.js").is_file())
 
     def test_scheduler_has_publisher_tab(self):
-        import inspect
-        self.assertIn('href="/publisher"',inspect.getsource(Handler.page))
+        page=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
+        self.assertIn('class="active" href="/"',page)
+
+    def test_schedule_management_page_links_to_shared_composer_not_another_editor(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"schedule-page.db")
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertIn('href="/"',page)
+        self.assertIn('Create schedule in the composer',page)
+        self.assertNotIn('id="schedule-form"',page)
+        self.assertNotIn('id="messages"',page)
 
     def test_radio_settings_are_a_separate_themed_tab(self):
         tmp=tempfile.TemporaryDirectory()
@@ -156,7 +172,7 @@ class WebUiTests(unittest.TestCase):
         thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
         try:
             with patch("towncrier.radio.Radio.snapshot",return_value=({"radio_freq":915.8},channels)):
-                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/") as response:
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
                     scheduler=response.read().decode()
                 with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/radio") as response:
                     radio=response.read().decode()
@@ -177,7 +193,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('name="tcp_host"',radio)
         self.assertIn('name="tcp_port"',radio)
 
-    def test_scheduler_message_rows_have_inline_order_controls(self):
+    def test_scheduler_page_is_management_only(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
         store=Store(Path(tmp.name)/"messages-ui.db"); Handler.store=store
         store.save({"name":"Pair","channels":[0],"messages":["first","second"],"interval":1800,"message_delay":3})
@@ -186,21 +202,15 @@ class WebUiTests(unittest.TestCase):
         channels=[{"index":i,"name":"","configured":False} for i in range(5)]
         try:
             with patch("towncrier.radio.Radio.snapshot",return_value=({},channels)):
-                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/?edit=1") as response:
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
                     page=response.read().decode()
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
-        self.assertEqual(page.count('aria-posinset='),2)
-        self.assertIn('aria-label="Add message below"',page)
-        self.assertIn('aria-label="Remove this message"',page)
-        self.assertIn('aria-label="Move message up"',page)
-        self.assertIn('aria-label="Move message down"',page)
-        self.assertIn('class="towncrier-workspace"',page)
-        self.assertIn('message-editor-panel',page)
-        self.assertIn('class="schedule-settings-rail"',page)
-        self.assertIn('Load a schedule',page)
-        self.assertIn('Send time (local)',page)
-        self.assertIn('Editing keeps the current next post time.',page)
+        self.assertNotIn('aria-posinset=',page)
+        self.assertNotIn('id="messages"',page)
+        self.assertNotIn('message-editor-panel',page)
+        self.assertIn('Edit in composer',page)
+        self.assertIn('Saved schedules',page)
 
     def test_save_edit_preserves_next_post_time_and_message_order(self):
         import urllib.parse
@@ -428,6 +438,20 @@ class PublisherApiTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(body,{"rooms":expected})
 
+    def test_shared_composer_can_create_and_edit_a_schedule(self):
+        data={"name":"Morning","channels":[0,2],"messages":["first","second"],"interval":3600,"message_delay":2,"send_at":"09:00","enabled":True}
+        status,_,body=self.request("/publisher-api/schedule","POST",data)
+        self.assertEqual(status,200)
+        ident=body["id"]
+        stored=Handler.store.get(ident)
+        self.assertEqual(stored["messages"],data["messages"])
+        self.assertEqual(stored["channels"],data["channels"])
+        data.update({"id":ident,"name":"Morning edited","messages":["revised"]})
+        self.assertEqual(self.request("/publisher-api/schedule","POST",data)[0],200)
+        _,_,loaded=self.request(f"/publisher-api/schedule?id={ident}")
+        self.assertEqual(loaded["name"],"Morning edited")
+        self.assertEqual(loaded["messages"],["revised"])
+
     def test_login_cookie_is_required_and_bound_to_room_before_publishing(self):
         key="b"*64
         with patch("towncrier.radio.Radio.publisher_login",return_value={"permissions":2}) as login, patch("towncrier.radio.Radio.publisher_send",return_value={"sent":True}) as send:
@@ -446,7 +470,7 @@ class PublisherApiTests(unittest.TestCase):
         html=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
         source=(Path(__file__).parents[1]/"towncrier/static/vendor/publisher.js").read_text()
         self.assertIn('href="/"',html)
-        self.assertIn('href="/publisher"',html)
+        self.assertIn('href="/schedules"',html)
         self.assertIn('already configured in Towncrier',html)
         self.assertNotIn('id="usbButton"',html)
         self.assertNotIn('id="bluetoothButton"',html)

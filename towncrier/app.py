@@ -35,9 +35,23 @@ class Handler(BaseHTTPRequestHandler):
  publisher_sessions_lock=threading.Lock()
  def do_GET(self):
   path=urlparse(self.path).path
-  if path=="/": return self.page()
+  if path=="/": return self.publisher_page()
+  if path=="/schedules": return self.schedules_page()
   if path=="/radio": return self.radio_page()
   if path=="/publisher": return self.publisher_page()
+  if path=="/publisher-api/schedule":
+   query=parse_qs(urlparse(self.path).query)
+   try:
+    row=self.store.get(int(query.get("id",[""])[0])) if query.get("id") else None
+    if query.get("id") and row is None: return self.respond(json.dumps({"error":"schedule not found"}),"application/json",404)
+    return self.respond(json.dumps(row),"application/json")
+   except (TypeError,ValueError) as exc: return self.respond(json.dumps({"error":str(exc)}),"application/json",400)
+  if path=="/publisher-api/channels":
+   try:
+    from .radio import Radio
+    _,channels=Radio.from_store(self.store).snapshot()
+    return self.respond(json.dumps({"channels":channels}),"application/json")
+   except Exception as exc: return self.respond(json.dumps({"error":str(exc)}),"application/json",502)
   if path=="/publisher-api/contacts":
    try:
     from .radio import Radio
@@ -50,6 +64,16 @@ class Handler(BaseHTTPRequestHandler):
   self.send_error(404)
  def do_POST(self):
   path=urlparse(self.path).path; body=self.rfile.read(int(self.headers.get("Content-Length",0)))
+  if path=="/publisher-api/schedule":
+   if not self.headers.get("Content-Type","").lower().startswith("application/json"):
+    return self.respond(json.dumps({"error":"Content-Type must be application/json"}),"application/json",415)
+   try:
+    payload=json.loads(body.decode("utf-8"))
+    if not isinstance(payload,dict): raise ValueError("request body must be a JSON object")
+    ident=self.store.save(payload,payload.get("id") or None)
+    return self.respond(json.dumps({"id":ident}),"application/json")
+   except (ValueError,TypeError,KeyError) as exc:
+    return self.respond(json.dumps({"error":str(exc)}),"application/json",400)
   if path in {"/publisher-api/login","/publisher-api/publish"}:
    if not self.headers.get("Content-Type","").lower().startswith("application/json"):
     return self.respond(json.dumps({"error":"Content-Type must be application/json"}),"application/json",415)
@@ -144,6 +168,15 @@ class Handler(BaseHTTPRequestHandler):
   except Exception as exc:
    if path=="/save" and ajax: return self.respond(str(exc),"text/plain",400)
    return self.radio_page(str(exc)) if path in {"/settings","/radio-settings","/channel-save","/channel-delete"} else self.page(str(exc))
+ def schedules_page(self):
+  rows=self.store.schedules()
+  out='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Towncrier · Schedules</title><link rel="stylesheet" href="/publisher.css"></head><body><main class="shell towncrier-scheduler"><header class="masthead towncrier-header"><img class="brand-logo" src="/assets/logo.png" alt="EastMesh"><div class="brand-title"><p class="eyebrow">EASTMESH · COMMUNITY MESH</p><h1>Towncrier</h1><p class="muted">Manage schedules and compose messages in one place.</p></div><span class="badge">Towncrier radio</span></header><nav class="towncrier-tabs" aria-label="Towncrier sections"><a class="active" href="/schedules">Schedules</a><a href="/">Composer</a><a href="/radio">Radio Settings</a></nav><p class="muted">Network-accessible scheduler; no authentication. Use only on a trusted network.</p><section class="card panel"><p class="eyebrow">SCHEDULES</p><h2>Saved schedules</h2><p><a class="edit-button" href="/?mode=schedule">Create schedule in the composer</a></p>'
+  if not rows: out+='<p class="muted">No saved schedules yet. Create one from the shared composer.</p>'
+  for row in rows:
+   next_send=datetime.fromtimestamp(row["next_send"]).astimezone().strftime("%b %-d, %Y at %H:%M %Z") if row["enabled"] else "Paused"
+   edit_url='/?schedule='+str(row["id"])
+   out+='<article class="saved-schedule"><div class="saved-schedule-heading"><strong>'+esc(row["name"])+'</strong><span class="'+('toggle-enabled' if row["enabled"] else 'toggle-disabled')+'">'+('enabled' if row["enabled"] else 'disabled')+'</span></div><p class="muted">Channels '+', '.join(str(channel) for channel in row["channels"])+' · '+esc(duration_label(row["interval"]))+'</p><small>Next send: '+html.escape(next_send)+'</small> '+esc(row["last_error"] or '')+'<p class="muted">'+str(len(row["messages"]))+' message(s)</p><div class="saved-schedule-actions"><a class="edit-button" href="'+edit_url+'">Edit in composer</a><form class="inline" method="post" action="/toggle"><input type="hidden" name="id" value="'+str(row["id"])+ '"><button class="'+('toggle-enabled' if row["enabled"] else 'toggle-disabled')+'">'+('Pause' if row["enabled"] else 'Enable')+'</button></form><form class="inline" method="post" action="/send"><input type="hidden" name="id" value="'+str(row["id"])+ '"><button>Send now</button></form><form class="inline" method="post" action="/delete"><input type="hidden" name="id" value="'+str(row["id"])+ '"><button class="danger">Delete</button></form></div></article>'
+  self.respond(out+'</section></main></body></html>')
  def page(self,error=""):
   rows=self.store.schedules(); q=parse_qs(urlparse(self.path).query); edit=self.store.get(q["edit"][0]) if q.get("edit") else None; e=edit or {"id":"","name":"","channel":0,"channels":[0],"messages":[""],"interval":3600,"message_delay":3,"send_at":"","enabled":1}; hours,minutes=duration_parts(e["interval"])
   channels=[]; channel_error=""; radio_settings={}; radio_error=""

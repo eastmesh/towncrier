@@ -1,4 +1,4 @@
-// ../../../meshpagepub/node_modules/emoji-picker-element/database.js
+// ../../meshpagepub/node_modules/emoji-picker-element/database.js
 function assertNonEmptyString(str) {
   if (typeof str !== "string" || !str) {
     throw new Error("expected a non-empty string, got: " + str);
@@ -774,7 +774,7 @@ var Database = class {
   }
 };
 
-// ../../../meshpagepub/node_modules/emoji-picker-element/picker.js
+// ../../meshpagepub/node_modules/emoji-picker-element/picker.js
 var allGroups = [
   [-1, "\u2728", "custom"],
   [0, "\u{1F600}", "smileys-emotion"],
@@ -2585,6 +2585,101 @@ $("sendButton").onclick = async () => {
     updateButtons();
   }
 };
+function buildScheduleDialog() {
+  if ($("scheduleDialog")) return $("scheduleDialog");
+  const dialog = document.createElement("dialog");
+  dialog.id = "scheduleDialog";
+  dialog.className = "modal";
+  dialog.innerHTML = '<form id="scheduleForm"><button class="modal-close" type="button" aria-label="Close">\xD7</button><p class="eyebrow">SCHEDULE THIS SEQUENCE</p><h2 id="scheduleDialogTitle">Add to schedule</h2><label class="field">Schedule name<input id="scheduleName" required maxlength="80"></label><label class="field">Radio channels<select id="scheduleChannels" multiple size="6" required></select></label><div class="schedule-fields"><label class="field">Send time (local)<input id="scheduleSendAt" type="time" value="09:00" required></label><label class="field">Repeat every \u2014 hours<input id="scheduleHours" type="number" min="0" value="1" required></label><label class="field">Minutes<input id="scheduleMinutes" type="number" min="0" max="59" step="1" value="0" required></label><label class="field">Delay between messages (seconds)<input id="scheduleDelay" type="number" min="0" max="3600" value="2" required></label></div><p class="muted">The first post waits at least one interval; subsequent posts follow the exact interval. Editing preserves the pending next post time.</p><p id="scheduleError" class="error-message" role="alert"></p><div class="actions"><button class="quiet" id="scheduleCancel" type="button">Cancel</button><button class="primary" id="scheduleSave" type="submit">Save schedule</button></div></form>';
+  document.body.append(dialog);
+  $("scheduleDialog").querySelector(".modal-close").onclick = () => $("scheduleDialog").close();
+  $("scheduleCancel").onclick = () => $("scheduleDialog").close();
+  $("scheduleForm").onsubmit = saveComposedSchedule;
+  return dialog;
+}
+var editingScheduleId = null;
+async function loadScheduleChannels(selected2 = []) {
+  const select = $("scheduleChannels");
+  select.replaceChildren();
+  let channels = [];
+  try {
+    channels = (await publisher.request("channels")).channels || [];
+  } catch {
+  }
+  if (!channels.length) channels = Array.from({ length: 40 }, (_, index) => ({ index, name: "", configured: false }));
+  for (const channel of channels) {
+    const option = new Option(`${channel.index} \xB7 ${channel.name || `Channel ${channel.index}`}${channel.configured === false ? " (may be empty)" : ""}`, String(channel.index));
+    option.selected = selected2.includes(channel.index);
+    select.add(option);
+  }
+}
+async function openScheduleDialog() {
+  buildScheduleDialog();
+  $("scheduleError").textContent = "";
+  await loadScheduleChannels();
+  $("scheduleName").value = editingScheduleId ? $("scheduleName").value : "New schedule";
+  $("scheduleDialogTitle").textContent = editingScheduleId ? "Edit schedule" : "Add to schedule";
+  $("scheduleSave").textContent = editingScheduleId ? "Save changes" : "Save schedule";
+  $("scheduleDialog").showModal();
+}
+async function saveComposedSchedule(event) {
+  event.preventDefault();
+  const messages = messageValues().filter((text) => text.trim()), channels = [...$("scheduleChannels").selectedOptions].map((option) => Number(option.value)), hours = Number($("scheduleHours").value), minutes = Number($("scheduleMinutes").value), interval = (hours * 60 + minutes) * 60;
+  if (!messages.length) {
+    $("scheduleError").textContent = "Add at least one non-empty message.";
+    return;
+  }
+  if (!channels.length) {
+    $("scheduleError").textContent = "Select at least one radio channel.";
+    return;
+  }
+  if (interval < 1800) {
+    $("scheduleError").textContent = "Schedule interval must be at least 30 minutes.";
+    return;
+  }
+  const payload = { name: $("scheduleName").value.trim(), channels, messages, interval, message_delay: Number($("scheduleDelay").value), send_at: $("scheduleSendAt").value, enabled: true };
+  if (editingScheduleId) payload.id = editingScheduleId;
+  $("scheduleSave").disabled = true;
+  $("scheduleError").textContent = "Saving schedule\u2026";
+  try {
+    const result = await publisher.request("schedule", payload);
+    editingScheduleId = result.id;
+    history.replaceState({}, "", `/publisher?schedule=${result.id}`);
+    $("scheduleError").textContent = "Saved. This same message sequence is now scheduled.";
+    $("sendStatus").textContent = "Schedule saved. You can still publish this sequence to a room from here.";
+    setTimeout(() => $("scheduleDialog").close(), 500);
+  } catch (error) {
+    $("scheduleError").textContent = error.message;
+  } finally {
+    $("scheduleSave").disabled = false;
+  }
+}
+async function loadScheduleForComposer() {
+  const query = new URLSearchParams(location.search), scheduleId = query.get("schedule");
+  if (!scheduleId) {
+    if (query.get("mode") === "schedule") openScheduleDialog();
+    return;
+  }
+  try {
+    const schedule = await publisher.request(`schedule?id=${encodeURIComponent(scheduleId)}`);
+    editingScheduleId = schedule.id;
+    renderMessages(schedule.messages);
+    $("delayInput").value = Math.max(1, schedule.message_delay || 2);
+    buildScheduleDialog();
+    $("scheduleName").value = schedule.name;
+    $("scheduleSendAt").value = schedule.send_at || "09:00";
+    $("scheduleHours").value = Math.floor(schedule.interval / 3600);
+    $("scheduleMinutes").value = Math.floor(schedule.interval % 3600 / 60);
+    $("scheduleDelay").value = schedule.message_delay || 0;
+    await loadScheduleChannels(schedule.channels);
+    $("scheduleDialogTitle").textContent = "Edit scheduled sequence";
+    $("scheduleSave").textContent = "Save changes";
+    $("scheduleDialog").showModal();
+  } catch (error) {
+    $("sendStatus").textContent = `Could not load schedule: ${error.message}`;
+  }
+}
+$("scheduleOpenButton").onclick = () => openScheduleDialog();
 renderMessages([""]);
 renderSaved();
-connect();
+connect().then(loadScheduleForComposer);
