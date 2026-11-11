@@ -136,7 +136,8 @@ class Radio:
             logged_in = loop.create_future()
             prefix = key[:12]
             def on_login(event):
-                if event.attributes.get("pubkey_prefix") == prefix and not logged_in.done():
+                event_prefix = (getattr(event, "attributes", None) or {}).get("pubkey_prefix")
+                if (event_prefix is None or event_prefix == prefix) and not logged_in.done():
                     logged_in.set_result(event)
             subscriptions = [
                 mc.dispatcher.subscribe(EventType.LOGIN_SUCCESS, on_login),
@@ -146,7 +147,7 @@ class Radio:
                 sent = await mc.commands.send_login(contact, password)
                 if sent is None or sent.type == EventType.ERROR:
                     raise RuntimeError(f"Room login request failed: {getattr(sent, 'payload', None)}")
-                timeout = max(2.0, float(sent.payload.get("suggested_timeout", 8000)) / 1000 + 2.0)
+                timeout = max(2.0, float(sent.payload.get("suggested_timeout", 8000)) / 800.0 + 2.0)
                 try:
                     result = await asyncio.wait_for(logged_in, timeout)
                 except asyncio.TimeoutError as exc:

@@ -286,10 +286,11 @@ class PublisherRadioTests(unittest.TestCase):
         with patch("towncrier.radio.Radio._connect", new=connect), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
             self.assertEqual(Radio("/dev/test",115200).publisher_contacts(),[{"publicKeyHex":"a"*64,"name":"Room A"}])
 
-    def test_publisher_login_requires_login_success_event(self):
+    def test_publisher_login_respects_meshcore_hop_timeout_budget(self):
         from types import SimpleNamespace
         from towncrier.radio import Radio
         class EventType: ERROR="error"; LOGIN_SUCCESS="login_success"; LOGIN_FAILED="login_failed"
+        timeouts=[]
         class Dispatcher:
             def __init__(self): self.subscriptions=[]
             def subscribe(self,event_type,callback):
@@ -303,6 +304,42 @@ class PublisherRadioTests(unittest.TestCase):
             async def send_login(self, contact, password):
                 self.called=(contact,password)
                 self.dispatcher.emit(SimpleNamespace(type="login_success",attributes={"pubkey_prefix":"a"*12},payload={"permissions":2}))
+                return SimpleNamespace(type="message_sent",payload={"suggested_timeout":40000})
+        class Mesh:
+            dispatcher=Dispatcher(); commands=Commands(); contacts={"a"*64:{"public_key":"a"*64,"type":3,"adv_name":"Room A"}}
+            commands.dispatcher=dispatcher
+            async def disconnect(self): pass
+        mesh=Mesh()
+        async def connect(_radio): return mesh
+        async def capture_timeout(awaitable,timeout):
+            timeouts.append(timeout)
+            return await awaitable
+        with patch("towncrier.radio.Radio._connect", new=connect), patch("towncrier.radio.asyncio.wait_for",new=capture_timeout), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
+            result=Radio("/dev/test",115200).publisher_login("a"*64,"secret")
+        self.assertEqual(result,{"permissions":2})
+        self.assertGreaterEqual(timeouts[0],40000/800)
+        self.assertEqual(mesh.commands.called,(mesh.contacts["a"*64],"secret"))
+        with patch("towncrier.radio.Radio._connect",side_effect=AssertionError("should not open radio")), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
+            with self.assertRaisesRegex(ValueError,"15 UTF-8 bytes"):
+                Radio("/dev/test",115200).publisher_login("a"*64,"é"*8)
+
+    def test_publisher_login_accepts_response_without_key_prefix(self):
+        import asyncio
+        from types import SimpleNamespace
+        from towncrier.radio import Radio
+        class EventType: ERROR="error"; LOGIN_SUCCESS="login_success"; LOGIN_FAILED="login_failed"
+        class Dispatcher:
+            def __init__(self): self.subscriptions=[]
+            def subscribe(self,event_type,callback):
+                entry=[event_type,callback]; self.subscriptions.append(entry)
+                return SimpleNamespace(unsubscribe=lambda:self.subscriptions.remove(entry))
+            def emit(self,event):
+                for event_type,callback in list(self.subscriptions):
+                    if event_type==event.type: callback(event)
+        class Commands:
+            async def get_contacts(self): return SimpleNamespace(type="contacts")
+            async def send_login(self,contact,password):
+                self.dispatcher.emit(SimpleNamespace(type="login_success",attributes={},payload={"permissions":2}))
                 return SimpleNamespace(type="message_sent",payload={"suggested_timeout":1000})
         class Mesh:
             dispatcher=Dispatcher(); commands=Commands(); contacts={"a"*64:{"public_key":"a"*64,"type":3,"adv_name":"Room A"}}
@@ -310,13 +347,12 @@ class PublisherRadioTests(unittest.TestCase):
             async def disconnect(self): pass
         mesh=Mesh()
         async def connect(_radio): return mesh
-        with patch("towncrier.radio.Radio._connect", new=connect), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
+        async def immediate_wait(awaitable,timeout):
+            if not awaitable.done(): raise asyncio.TimeoutError()
+            return await awaitable
+        with patch("towncrier.radio.Radio._connect",new=connect), patch("towncrier.radio.asyncio.wait_for",new=immediate_wait), patch.dict("sys.modules",{"meshcore":SimpleNamespace(EventType=EventType)}):
             result=Radio("/dev/test",115200).publisher_login("a"*64,"secret")
         self.assertEqual(result,{"permissions":2})
-        self.assertEqual(mesh.commands.called,(mesh.contacts["a"*64],"secret"))
-        with patch("towncrier.radio.Radio._connect",side_effect=AssertionError("should not open radio")), patch.dict("sys.modules", {"meshcore":SimpleNamespace(EventType=EventType)}):
-            with self.assertRaisesRegex(ValueError,"15 UTF-8 bytes"):
-                Radio("/dev/test",115200).publisher_login("a"*64,"é"*8)
 
     def test_publisher_send_uses_room_key_and_checks_utf8_limit(self):
         from types import SimpleNamespace
