@@ -36,8 +36,22 @@ export function reorderMessages(messages, from, to) {
   return next;
 }
 
-export function splitMessages(values) {
-  return values.map(value => String(value)).filter(value => value.trim());
+export function splitMessages(values, limit = MAX_POST_BYTES) {
+  const maxBytes = Math.max(1, Number(limit) || MAX_POST_BYTES);
+  const result = [];
+  for (const value of values) {
+    let chunk = '';
+    for (const character of String(value)) {
+      if (encoder.encode(chunk + character).length > maxBytes) {
+        if (chunk) result.push(chunk);
+        chunk = character;
+      } else {
+        chunk += character;
+      }
+    }
+    if (chunk) result.push(chunk);
+  }
+  return result;
 }
 
 export function normalizeRoomTarget(target) {

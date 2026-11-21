@@ -2111,8 +2111,22 @@ function reorderMessages(messages, from, to) {
   next.splice(to, 0, item);
   return next;
 }
-function splitMessages(values) {
-  return values.map((value) => String(value)).filter((value) => value.trim());
+function splitMessages(values, limit = MAX_POST_BYTES) {
+  const maxBytes = Math.max(1, Number(limit) || MAX_POST_BYTES);
+  const result = [];
+  for (const value of values) {
+    let chunk = "";
+    for (const character of String(value)) {
+      if (encoder.encode(chunk + character).length > maxBytes) {
+        if (chunk) result.push(chunk);
+        chunk = character;
+      } else {
+        chunk += character;
+      }
+    }
+    if (chunk) result.push(chunk);
+  }
+  return result;
 }
 async function sendInOrder(messages, send, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), delayMs = 1500, isStopped = () => false, onProgress = () => {
 }) {
@@ -2168,7 +2182,7 @@ function resizeMessage(ta) {
   ta.style.height = `${Math.max(ta.scrollHeight, 48)}px`;
 }
 function clampMessage(ta) {
-  const start = ta.selectionStart, end = ta.selectionEnd, value = truncateUtf8(ta.value, MAX_POST_BYTES);
+  const start = ta.selectionStart, end = ta.selectionEnd, value = ta.value;
   if (value !== ta.value) {
     ta.value = value;
     ta.setSelectionRange(Math.min(start, value.length), Math.min(end, value.length));
@@ -2204,6 +2218,7 @@ function updatePreviewScale() {
   $("phoneSizeNote").textContent = `Phone viewport \xB7 ${width} \xD7 ${height}`;
 }
 function renderMessages(values = [""]) {
+  values = values.flatMap((value) => validateMessage(value).valid ? [String(value)] : splitMessages([value]));
   messagesEl.replaceChildren();
   const moveMessage = (from, to) => {
     if (from === to) return;
@@ -2287,14 +2302,23 @@ function renderMessages(values = [""]) {
     ta.placeholder = "Compose message\u2026";
     ta.value = value;
     ta.setAttribute("aria-label", `Message ${i + 1}`);
-    const update = () => {
+    function update() {
+      const info = validateMessage(ta.value);
+      if (!info.valid) {
+        const chunks = splitMessages([ta.value]), next = [...messageValues()];
+        next.splice(i, 1, ...chunks);
+        renderMessages(next);
+        const continuation = messagesEl.querySelectorAll(".message textarea")[i + chunks.length - 1];
+        continuation?.focus();
+        continuation?.setSelectionRange(continuation.value.length, continuation.value.length);
+        return;
+      }
       clampMessage(ta);
       resizeMessage(ta);
-      const info = validateMessage(ta.value);
       count.textContent = `${info.bytes}/${MAX_POST_BYTES} bytes`;
       count.classList.toggle("error", !info.valid);
       renderPreview();
-    };
+    }
     ta.addEventListener("input", update);
     ta.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("sendButton").click();

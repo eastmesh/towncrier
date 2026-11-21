@@ -1,0 +1,13 @@
+:root[data-theme="light"]{color-scheme:light;--em-bg:#f3f6f4;--em-panel:#fff;--em-panel-soft:#f0f4f1;--em-surface:#e6ede8;--em-muted:#58665e;--em-fg:#202b25;--em-fg-muted:#58665e;--em-accent:#27824f;--em-border:rgba(32,43,37,.15);--em-green-light:#267342;--em-blue:#245078}
+:root[data-theme="light"] body{background:var(--em-bg);color:var(--em-fg)}
+:root[data-theme="light"] .towncrier-header h1{color:var(--em-fg)}
+:root[data-theme="light"] .badge.connected{color:#202b25}
+:root[data-theme="light"] .towncrier-scheduler .towncrier-tabs a.active,:root[data-theme="light"] .towncrier-scheduler .towncrier-tabs a:hover{color:var(--em-fg)}
+:root[data-theme="light"] .towncrier-scheduler .edit-button{color:#fff}
+:root[data-theme="light"] .towncrier-scheduler .toggle-enabled{color:#17643a}
+:root[data-theme="light"] .towncrier-scheduler .toggle-disabled{color:#8b2d37}
+:root[data-theme="light"] .towncrier-scheduler .message-row{background:rgba(32,43,37,.025)}
+:root[data-theme="light"] .towncrier-scheduler .error-message{background:#fff0f0;color:#8b2d37}
+.theme-toggle{margin-left:auto;white-space:nowrap;background:var(--em-panel);color:var(--em-fg);border-color:var(--em-border);font-size:14px;padding:8px 13px}
+.theme-toggle:hover{background:var(--em-panel-soft)}
+@media(max-width:700px){.theme-toggle{margin-left:0}}

@@ -142,6 +142,18 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("Scheduled sequence loaded.",source)
         self.assertNotIn("scheduleSave').textContent='Save changes';$('scheduleDialog').showModal()",source)
 
+    def test_message_overflow_creates_continuation_rows_and_preserves_text(self):
+        root=Path(__file__).parents[1]/"towncrier/static"
+        source=(root/"vendor/publisher.js").read_text()
+        ui=(root/"publisher.js").read_text()
+        bundle=(root/"publisher.bundle.js").read_text()
+        self.assertIn("function update(){const info=validateMessage(ta.value);if(!info.valid)",ui)
+        self.assertIn("next.splice(i,1,...chunks)",ui)
+        self.assertIn("continuation?.focus()",ui)
+        self.assertIn("encoder.encode(chunk + character).length > maxBytes",source)
+        self.assertNotIn("truncateUtf8(ta.value,MAX_POST_BYTES)",ui)
+        self.assertIn("next.splice(i, 1, ...chunks)",bundle)
+
     def test_message_controls_preserve_live_textarea_values(self):
         source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
         self.assertIn("const next=[...messageValues()];next.splice(i+1,0,'')",source)
@@ -200,6 +212,31 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('value="tcp"',radio)
         self.assertIn('name="tcp_host"',radio)
         self.assertIn('name="tcp_port"',radio)
+
+    def test_light_mode_toggle_is_shared_and_persistent_across_pages(self):
+        root=Path(__file__).parents[1]/"towncrier/static"
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"theme.db")
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            pages=[]
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
+                for path in ("/", "/schedules", "/radio"):
+                    with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}{path}") as response:
+                        pages.append(response.read().decode())
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        theme=(root/"theme.js").read_text() if (root/"theme.js").exists() else ""
+        css=(root/"theme.css").read_text()
+        for page in pages:
+            self.assertIn('id="themeToggle"',page)
+            self.assertIn('aria-label="Switch to light mode"',page)
+            self.assertIn('src="/theme.js"',page)
+        self.assertIn("localStorage",theme)
+        self.assertIn("dataset.theme",theme)
+        self.assertIn("addEventListener('click'",theme)
+        self.assertIn(':root[data-theme="light"]',css)
 
     def test_scheduler_page_is_management_only(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
