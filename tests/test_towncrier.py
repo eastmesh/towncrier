@@ -151,9 +151,16 @@ class StoreTests(unittest.TestCase):
     def test_escape(self): self.assertEqual(esc('<script>'), '&lt;script&gt;')
 
 class WebUiTests(unittest.TestCase):
-    def test_publisher_page_contains_composer_and_room_auth_controls(self):
+    def test_publisher_page_contains_composer_and_page_controls(self):
         page=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
-        for control in ('id="messages"','id="sendButton"','id="roomPassword"','id="previewDialog"','id="saveButton"','id="importInput"','id="savedLists"'):
+        for control in ('id="messages"','id="saveButton"','id="importInput"','id="savedLists"'):
+            self.assertIn(control,page)
+        self.assertIn('id="sendButton"',page)
+        self.assertIn('href="/publish"',page)
+
+    def test_publish_page_contains_room_flow_and_saved_page_selector(self):
+        page=(Path(__file__).parents[1]/"towncrier/static/publish.html").read_text()
+        for control in ('id="roomServerSelect"','id="roomPassword"','id="loginButton"','id="pageSelect"','id="publishButton"'):
             self.assertIn(control,page)
 
     def test_publisher_composer_has_per_message_add_delete_and_order_controls(self):
@@ -560,14 +567,12 @@ class PublisherApiTests(unittest.TestCase):
         self.assertEqual((status,body),(200,{"sent":True}))
         self.assertEqual(len(session.call_args_list) if hasattr(session,"call_args_list") else 1,1)
 
-    def test_publisher_tab_exposes_room_flow_but_no_browser_radio_chooser(self):
-        html=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
+    def test_publish_tab_exposes_room_flow_but_no_browser_radio_chooser(self):
+        html=(Path(__file__).parents[1]/"towncrier/static/publish.html").read_text()
         source=(Path(__file__).parents[1]/"towncrier/static/vendor/publisher.js").read_text()
-        self.assertIn('href="/"',html)
-        self.assertIn('href="/schedules"',html)
-        self.assertIn('already configured in Towncrier',html)
-        self.assertNotIn('id="usbButton"',html)
-        self.assertNotIn('id="bluetoothButton"',html)
+        self.assertIn('href="/publish"',html)
+        self.assertIn('id="roomServerSelect"',html)
+        self.assertIn('id="pageSelect"',html)
         self.assertNotIn('navigator.serial',source)
         self.assertNotIn('navigator.bluetooth',source)
 
