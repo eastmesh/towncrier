@@ -63,7 +63,8 @@ def send_message(radio,channel,message,delay=MESSAGE_DELAY):
 
 class BotListener(threading.Thread):
  daemon=True
- def __init__(self,store,stop_event): super().__init__(); self.store,self.stop_event=store,stop_event
+ def __init__(self,store,stop_event):
+  super().__init__(); self.store,self.stop_event=store,stop_event; self.seen_messages=set(); self.initial_drained=False
  def _config(self):
   enabled=self.store.setting("bot_enabled","0")=="1"; trigger=self.store.setting("bot_trigger","").strip(); page_name=self.store.setting("bot_page_name","").strip()
   try: channel=int(self.store.setting("bot_channel","-1"))
@@ -80,6 +81,9 @@ class BotListener(threading.Thread):
   async def on_message(event):
    payload=getattr(event,"payload",None) or {}; text=str(payload.get("text", "")); incoming_channel=payload.get("channel_idx")
    if incoming_channel!=channel: return
+   key=(payload.get("sender_timestamp"),text,incoming_channel)
+   if key in self.seen_messages: return
+   self.seen_messages.add(key)
    matched_text=text.split(":",1)[1].lstrip() if ":" in text else text
    matched=matched_text.lower().startswith(trigger.lower())
    record_bot_message(channel,text,matched)
@@ -92,16 +96,10 @@ class BotListener(threading.Thread):
      result=await mc.commands.send_chan_msg(channel,chunk)
      if getattr(result,"type",None)==EventType.ERROR: raise RuntimeError(result.payload)
   try:
-   set_bot_status(state="draining",channel=channel,error="Clearing previously queued radio messages")
-   while True:
-    pending=await mc.commands.get_msg()
-    if getattr(pending,"type",None) in {EventType.NO_MORE_MSGS,EventType.ERROR}: break
-   subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
-   set_bot_status(state="polling",channel=channel,error="")
-   while not self.stop_event.is_set():
-    result=await mc.commands.get_msg()
-    if getattr(result,"type",None)==EventType.ERROR and getattr(result,"payload",{}).get("reason")!="no_event_received": set_bot_status(state="error",channel=channel,error=str(result.payload))
-    await asyncio.sleep(0.25)
+   subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message,attribute_filters={"channel_idx":channel})
+   await mc.start_auto_message_fetching()
+   set_bot_status(state="listening",channel=channel,error="")
+   while not self.stop_event.is_set(): await asyncio.sleep(1)
   finally:
    if subscription is not None:
     try: mc.unsubscribe(subscription)
