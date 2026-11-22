@@ -68,7 +68,7 @@ http://127.0.0.1:8080/
 
 ### Open it from another computer or phone
 
-Towncrier listens on all network interfaces on port `8080`. To find the Linux computer's local network address, open a terminal on that computer and run:
+Towncrier pageens on all network interfaces on port `8080`. To find the Linux computer's local network address, open a terminal on that computer and run:
 
 ```bash
 hostname -I
@@ -139,7 +139,7 @@ To add or replace a channel:
 4. For a private channel, enter exactly 32 hexadecimal characters as the secret. Treat this value like a password and do not share it publicly.
 5. Click **Save channel on radio**.
 
-The channel list displays configured channels without displaying private secrets. Click **delete** to clear a channel slot on the radio. MeshCore implements deletion by writing an empty name and an all-zero secret. Do not delete a channel that is still used by a schedule; change or disable that schedule first.
+The channel page displays configured channels without displaying private secrets. Click **delete** to clear a channel slot on the radio. MeshCore implements deletion by writing an empty name and an all-zero secret. Do not delete a channel that is still used by a schedule; change or disable that schedule first.
 
 The page reads up to 40 radio channel slots when it loads. Channel indices are validated locally, and the radio remains the source of truth.
 
@@ -149,12 +149,12 @@ Use the **Add schedule** form:
 
 - **Name**: a short label you will recognise, such as `Morning status`.
 - **Channel index**: the numeric MeshCore channel slot, from `0` to `255`. This is the channel index configured on the companion radio, not the channel name.
-- **Send time (local)**: anchors the first post to a local clock time, but it will not be scheduled earlier than one full interval after saving. After the first post, Towncrier follows the exact interval from each successful send.
-- **Hours** and **Minutes**: the exact interval between posts after the first one. The smallest allowed value is 30 minutes. For once per hour, enter `1` hour and `0` minutes. Minutes must be from `0` to `59`.
+- **Daily post times (local)**: add one or more times; Towncrier posts once at each selected time every day. Times use the Towncrier host’s local timezone.
+- **Delay between messages**: delay in seconds between entries in the message sequence when it is sent.
 - **Messages**: add one or more texts (up to 500 characters each). Use the `+` and `−` buttons and up/down arrows beside each message, or drag messages, to set their send order; the order is saved with the schedule. Towncrier automatically sends long messages as channel chunks, aiming for about 120 characters per part and never exceeding 130 characters per part.
 - **Enabled**: leave checked for the scheduler to send it. Uncheck it when you want to keep the message without sending it.
 
-Click **Save schedule**. The schedule table shows the next send date and time for enabled schedules, and “Paused” for disabled schedules. Editing a schedule keeps its existing next-send timestamp; an updated interval applies after that post. Existing schedules created with the older seconds-based interface are raised to the new 30-minute minimum automatically.
+Click **Save schedule**. The schedule table shows the next send date and time for enabled schedules, and “Paused” for disabled schedules. Editing a schedule preserves the pending next-send timestamp while applying the updated daily times after that pending post. Existing schedules are migrated from their saved send time (or their old interval if none was set).
 
 The schedule table shows whether an item is enabled, its last status, and the most recent error. The available actions are:
 

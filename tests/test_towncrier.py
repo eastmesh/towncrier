@@ -32,6 +32,23 @@ class StoreTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.s = Store(Path(self.tmp.name) / "x.db")
     def tearDown(self): self.tmp.cleanup()
+    def test_explicit_daily_times_replace_interval_and_advance_to_next_clock_time(self):
+        times=["09:00","13:30","18:00"]
+        fixed=datetime.now().astimezone().replace(second=0,microsecond=0)
+        times=[(fixed+timedelta(hours=1)).strftime("%H:%M"),(fixed+timedelta(hours=3)).strftime("%H:%M"),(fixed+timedelta(hours=5)).strftime("%H:%M")]
+        times=sorted(set(times))
+        ident=self.s.save({"name":"times","channels":[0],"messages":["x"],"interval":1800,"post_times":times})
+        first_expected=next((value for value in times if datetime.strptime(value,"%H:%M").time()>fixed.time()),times[0])
+        actual=datetime.fromtimestamp(self.s.get(ident)["next_send"]).astimezone()
+        self.assertEqual(actual.strftime("%H:%M"),first_expected)
+        ordered=times[times.index(first_expected):]+times[:times.index(first_expected)]
+        first=datetime.fromtimestamp(self.s.get(ident)["next_send"]).astimezone()
+        self.assertEqual(first.strftime("%H:%M"),ordered[0])
+        self.s.sent(ident,first.timestamp(),1800)
+        self.assertEqual(datetime.fromtimestamp(self.s.get(ident)["next_send"]).astimezone().strftime("%H:%M"),ordered[1])
+        second=datetime.fromtimestamp(self.s.get(ident)["next_send"]).astimezone()
+        self.s.sent(ident,second.timestamp(),1800)
+        self.assertEqual(datetime.fromtimestamp(self.s.get(ident)["next_send"]).astimezone().strftime("%H:%M"),ordered[2])
     def test_round_trip_validation_and_crud(self):
         self.s.save({"name":"Morning","channel":2,"messages":["hello","world"],"interval":1800,"enabled":True})
         row = self.s.schedules()[0]
@@ -86,9 +103,8 @@ class StoreTests(unittest.TestCase):
         row=self.s.get(1)
         assert row is not None
         due_local=datetime.fromtimestamp(row["next_send"]).astimezone()
-        self.assertGreaterEqual(row["next_send"],fixed_now.timestamp()+72*3600)
         self.assertEqual(due_local.strftime("%H:%M"),"09:00")
-        self.assertEqual(due_local.date(),(fixed_now+timedelta(hours=72)).date())
+        self.assertEqual(due_local.date(),fixed_now.date())
     def test_edit_keeps_next_send_timestamp(self):
         self.s.save({"name":"x","channels":[1],"message":"x","interval":72*3600})
         original=self.s.get(1)
@@ -98,7 +114,7 @@ class StoreTests(unittest.TestCase):
         updated=self.s.get(1)
         assert updated is not None
         self.assertEqual(updated["next_send"],original_next_send)
-        self.assertEqual(updated["send_at"],"09:00")
+        self.assertEqual(updated["post_times"],["09:00"])
     def test_multiple_channels_round_trip(self):
         self.s.save({"name":"x","channels":[1,3],"messages":["a","b"],"interval":1800})
         self.assertEqual(self.s.schedules()[0]["channels"], [1, 3])
@@ -162,6 +178,27 @@ class WebUiTests(unittest.TestCase):
     def test_static_routes_reject_path_traversal(self):
         from towncrier.app import Handler
         self.assertTrue((Path(__file__).parents[1]/"towncrier/static/publisher.bundle.js").is_file())
+
+    def test_bot_page_has_channel_trigger_and_saved_list_controls(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"bot-page.db")
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/bot") as response:
+                page=response.read().decode()
+            self.assertIn("Trigger word",page)
+            self.assertIn("Channel",page)
+            self.assertIn("Saved page",page)
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+
+    def test_bot_config_round_trips_and_trigger_posts_selected_list_to_channel(self):
+        tmp=tempfile.TemporaryDirectory(); store=Store(Path(tmp.name)/"lists.db")
+        try:
+            store.save_list("Alerts",["one","two"])
+            self.assertEqual(store.saved_lists(),[{"name":"Alerts","messages":["one","two"]}])
+        finally: tmp.cleanup()
 
     def test_scheduler_has_publisher_tab(self):
         page=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
@@ -263,7 +300,7 @@ class WebUiTests(unittest.TestCase):
         store=Store(Path(tmp.name)/"messages-order.db"); Handler.store=store
         server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
         thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
-        fields=[("name","Ordered"),("channel","0"),("send_at","09:00"),("hours","0"),("minutes","30"),("message_delay","3"),("message","second"),("message","first"),("enabled","on")]
+        fields=[("name","Ordered"),("channel","0"),("post_time","09:00"),("post_time","12:00"),("message_delay","3"),("message","second"),("message","first"),("enabled","on")]
         request=urllib.request.Request(f"http://127.0.0.1:{server.server_port}/save",data=urllib.parse.urlencode(fields).encode(),headers={"Content-Type":"application/x-www-form-urlencoded"})
         try:
             with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
@@ -272,7 +309,7 @@ class WebUiTests(unittest.TestCase):
                 assert created is not None
                 original_next_send=created["next_send"]
                 saved_messages=created["messages"]
-                edit_fields=[("id","1"),("name","Edited"),("channel","0"),("send_at","10:00"),("hours","0"),("minutes","30"),("message_delay","3"),("message","updated"),("enabled","on")]
+                edit_fields=[("id","1"),("name","Edited"),("channel","0"),("post_time","10:00"),("post_time","15:00"),("message_delay","3"),("message","updated"),("enabled","on")]
                 edit_request=Request(f"http://127.0.0.1:{server.server_port}/save",data=urllib.parse.urlencode(edit_fields).encode(),headers={"Content-Type":"application/x-www-form-urlencoded"})
                 with urlopen(edit_request): pass
             updated=store.get(1)
@@ -282,7 +319,7 @@ class WebUiTests(unittest.TestCase):
         self.assertEqual(saved_messages,["second","first"])
         self.assertEqual(updated["messages"],["updated"])
         self.assertEqual(updated["next_send"],original_next_send)
-        self.assertEqual(updated["send_at"],"10:00")
+        self.assertEqual(updated["post_times"],["10:00","15:00"])
 
     def test_tcp_connection_settings_are_saved_and_validated(self):
         import urllib.parse
@@ -484,7 +521,7 @@ class PublisherApiTests(unittest.TestCase):
         self.assertEqual(body,{"rooms":expected})
 
     def test_shared_composer_can_create_and_edit_a_schedule(self):
-        data={"name":"Morning","channels":[0,2],"messages":["first","second"],"interval":3600,"message_delay":2,"send_at":"09:00","enabled":True}
+        data={"name":"Morning","channels":[0,2],"messages":["first","second"],"interval":1800,"message_delay":2,"post_times":["09:00","17:30"],"enabled":True}
         status,_,body=self.request("/publisher-api/schedule","POST",data)
         self.assertEqual(status,200)
         ident=body["id"]

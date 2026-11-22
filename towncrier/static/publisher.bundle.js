@@ -1,4 +1,4 @@
-// ../../meshpagepub/node_modules/emoji-picker-element/database.js
+// node_modules/emoji-picker-element/database.js
 function assertNonEmptyString(str) {
   if (typeof str !== "string" || !str) {
     throw new Error("expected a non-empty string, got: " + str);
@@ -774,7 +774,7 @@ var Database = class {
   }
 };
 
-// ../../meshpagepub/node_modules/emoji-picker-element/picker.js
+// node_modules/emoji-picker-element/picker.js
 var allGroups = [
   [-1, "\u2728", "custom"],
   [0, "\u{1F600}", "smileys-emotion"],
@@ -2080,17 +2080,6 @@ function validateMessage(text, limit = MAX_POST_BYTES) {
   const bytes = encoder.encode(String(text)).length;
   return { bytes, limit, valid: bytes <= limit, remaining: limit - bytes };
 }
-function truncateUtf8(text, maxBytes = MAX_POST_BYTES) {
-  const limit = Math.max(0, Number(maxBytes) || 0);
-  let bytes = 0, result = "";
-  for (const character of String(text)) {
-    const size = encoder.encode(character).length;
-    if (bytes + size > limit) break;
-    result += character;
-    bytes += size;
-  }
-  return result;
-}
 function secondsToMilliseconds(seconds) {
   const value = Number(seconds);
   if (!Number.isInteger(value) || value < 1) throw new Error("Delay must be a whole number of seconds.");
@@ -2172,7 +2161,6 @@ var publisher = null;
 var loggedIn = false;
 var running = false;
 var stopRequested = false;
-var STORAGE_KEY = "meshpagepub.lists.v1";
 var PHONE_SCREEN_DEFAULT = { width: 390, height: 844 };
 function messageValues() {
   return [...messagesEl.querySelectorAll("textarea")].map((x) => x.value);
@@ -2319,6 +2307,7 @@ function renderMessages(values = [""]) {
       count.classList.toggle("error", !info.valid);
       renderPreview();
     }
+    ;
     ta.addEventListener("input", update);
     ta.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("sendButton").click();
@@ -2387,15 +2376,25 @@ function renderMessages(values = [""]) {
     update();
   });
 }
+var serverLists = {};
 function lists() {
+  return serverLists;
+}
+async function loadServerLists() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-  } catch {
-    return {};
+    const response = await fetch("/publisher-api/lists");
+    const data = await response.json();
+    serverLists = Object.fromEntries((data.lists || []).map((item) => [item.name, item.messages]));
+    renderSaved();
+  } catch (error) {
+    $("sendStatus").textContent = `Could not load saved pages: ${error.message}`;
   }
 }
-function saveLists(data) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+async function saveServerList(name, messages) {
+  const response = await fetch("/publisher-api/lists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, messages }) });
+  if (!response.ok) throw Error((await response.json()).error || "save failed");
+  const data = await response.json();
+  serverLists = Object.fromEntries((data.lists || []).map((item) => [item.name, item.messages]));
   renderSaved();
 }
 function renderSaved() {
@@ -2403,7 +2402,7 @@ function renderSaved() {
     root.replaceChildren();
     const data = lists(), names = Object.keys(data).sort((a, b) => a.localeCompare(b));
     if (!names.length) {
-      root.innerHTML = '<p class="status">No saved lists yet.</p>';
+      root.innerHTML = '<p class="status">No saved pages yet.</p>';
       continue;
     }
     names.forEach((name) => {
@@ -2422,24 +2421,11 @@ function renderSaved() {
       load.textContent = "Load";
       load.onclick = () => {
         renderMessages(data[name]);
-        $("listName").value = name;
+        $("pageName").value = name;
         $("sendStatus").textContent = `Loaded \u201C${name}\u201D.`;
         $("loadDialog").close();
       };
       actions.append(load);
-      if (root.id === "savedLists") {
-        const del = document.createElement("button");
-        del.className = "quiet";
-        del.textContent = "Delete";
-        del.onclick = () => {
-          if (confirm(`Delete saved list \u201C${name}\u201D?`)) {
-            const next = lists();
-            delete next[name];
-            saveLists(next);
-          }
-        };
-        actions.append(del);
-      }
       row.append(left, actions);
       root.append(row);
     });
@@ -2447,9 +2433,9 @@ function renderSaved() {
 }
 function updateButtons() {
   const connected = !!publisher, roomName = $("roomServerSelect").selectedOptions[0]?.textContent || "no room selected";
-  $("connectionBadge").textContent = connected ? "Towncrier radio" : "Unavailable";
+  $("connectionBadge").textContent = connected ? "MeshPage Publisher radio" : "Unavailable";
   $("connectionBadge").classList.toggle("connected", connected);
-  $("railConnectionStatus").textContent = connected ? `${loggedIn ? "Logged in" : "Using Towncrier USB radio"} \xB7 ${roomName}` : "Towncrier radio unavailable";
+  $("railConnectionStatus").textContent = connected ? `${loggedIn ? "Logged in" : "Using MeshPage Publisher radio"} \xB7 ${roomName}` : "MeshPage Publisher radio unavailable";
   $("connectionOpenButton").textContent = "Choose room server";
   $("refreshServersButton").disabled = !connected;
   $("loginButton").disabled = !connected || loggedIn || running;
@@ -2530,26 +2516,30 @@ window.addEventListener("resize", () => {
 });
 $("saveOpenButton").onclick = () => {
   $("saveDialog").showModal();
-  $("listName").focus();
+  $("pageName").focus();
 };
 $("loadOpenButton").onclick = () => {
   $("loadDialog").showModal();
   renderSaved();
 };
-$("saveButton").onclick = () => {
-  const name = $("listName").value.trim();
+$("saveButton").onclick = async () => {
+  const name = $("pageName").value.trim();
   if (!name) {
-    $("listName").focus();
+    $("pageName").focus();
     return;
   }
-  saveLists({ ...lists(), [name]: messageValues() });
-  $("sendStatus").textContent = `Saved \u201C${name}\u201D.`;
-  $("saveDialog").close();
+  try {
+    await saveServerList(name, messageValues());
+    $("sendStatus").textContent = `Saved \u201C${name}\u201D on the server.`;
+    $("saveDialog").close();
+  } catch (error) {
+    $("sendStatus").textContent = `Save failed: ${error.message}`;
+  }
 };
 $("exportButton").onclick = () => {
-  const blob = new Blob([JSON.stringify({ version: 1, lists: lists() }, null, 2)], { type: "application/json" }), a = document.createElement("a");
+  const blob = new Blob([JSON.stringify({ version: 1, pages: lists() }, null, 2)], { type: "application/json" }), a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "meshpagepub-lists.json";
+  a.download = "meshpagepub-pages.json";
   a.click();
   URL.revokeObjectURL(a.href);
 };
@@ -2557,18 +2547,18 @@ $("importInput").onchange = async (e) => {
   try {
     const file = e.target.files[0];
     if (!file) return;
-    const obj = JSON.parse(await file.text()), imported = obj.lists || obj;
+    const obj = JSON.parse(await file.text()), imported = obj.pages || obj;
     if (!imported || typeof imported !== "object" || Array.isArray(imported)) throw Error();
     const clean = { ...lists() };
     for (const [k, v] of Object.entries(imported)) {
       if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) throw Error();
       clean[k] = v;
     }
-    saveLists(clean);
-    $("sendStatus").textContent = "Lists imported.";
+    saveServerList(Object.keys(clean)[0], clean[Object.keys(clean)[0]]);
+    $("sendStatus").textContent = "Pages imported.";
     $("loadDialog").close();
   } catch {
-    $("sendStatus").textContent = "Import failed: expected a JSON object of named string lists.";
+    $("sendStatus").textContent = "Import failed: expected a JSON object of named string pages.";
   }
   e.target.value = "";
 };
@@ -2614,7 +2604,7 @@ function buildScheduleDialog() {
   const dialog = document.createElement("dialog");
   dialog.id = "scheduleDialog";
   dialog.className = "modal";
-  dialog.innerHTML = '<form id="scheduleForm"><button class="modal-close" type="button" aria-label="Close">\xD7</button><p class="eyebrow">SCHEDULE THIS SEQUENCE</p><h2 id="scheduleDialogTitle">Add to schedule</h2><label class="field">Schedule name<input id="scheduleName" required maxlength="80"></label><label class="field">Radio channels<select id="scheduleChannels" multiple size="6" required></select></label><div class="schedule-fields"><label class="field">Send time (local)<input id="scheduleSendAt" type="time" value="09:00" required></label><label class="field">Repeat every \u2014 hours<input id="scheduleHours" type="number" min="0" value="1" required></label><label class="field">Minutes<input id="scheduleMinutes" type="number" min="0" max="59" step="1" value="0" required></label><label class="field">Delay between messages (seconds)<input id="scheduleDelay" type="number" min="0" max="3600" value="2" required></label></div><p class="muted">The first post waits at least one interval; subsequent posts follow the exact interval. Editing preserves the pending next post time.</p><p id="scheduleError" class="error-message" role="alert"></p><div class="actions"><button class="quiet" id="scheduleCancel" type="button">Cancel</button><button class="primary" id="scheduleSave" type="submit">Save schedule</button></div></form>';
+  dialog.innerHTML = '<form id="scheduleForm"><button class="modal-close" type="button" aria-label="Close">\xD7</button><p class="eyebrow">SCHEDULE THIS SEQUENCE</p><h2 id="scheduleDialogTitle">Add to schedule</h2><label class="field">Schedule name<input id="scheduleName" required maxlength="80"></label><label class="field">Radio channels<select id="scheduleChannels" multiple size="6" required></select></label><fieldset><legend>Post at these local times each day</legend><div id="schedulePostTimes"></div><button class="quiet" id="addPostTime" type="button">Add a time</button></fieldset><div class="schedule-fields"><label class="field">Delay between messages (seconds)<input id="scheduleDelay" type="number" min="0" max="3600" value="2" required></label></div><p class="muted">Towncrier posts once at each selected time every day. Editing preserves the pending next post time.</p><p id="scheduleError" class="error-message" role="alert"></p><div class="actions"><button class="quiet" id="scheduleCancel" type="button">Cancel</button><button class="primary" id="scheduleSave" type="submit">Save schedule</button></div></form>';
   document.body.append(dialog);
   $("scheduleDialog").querySelector(".modal-close").onclick = () => $("scheduleDialog").close();
   $("scheduleCancel").onclick = () => $("scheduleDialog").close();
@@ -2641,15 +2631,34 @@ async function loadScheduleChannels(selected2 = []) {
 async function openScheduleDialog() {
   buildScheduleDialog();
   $("scheduleError").textContent = "";
+  if (!editingScheduleId && !$("schedulePostTimes").children.length) addPostTime("09:00");
   await loadScheduleChannels(editingScheduleId ? editingScheduleChannels : []);
   $("scheduleName").value = editingScheduleId ? $("scheduleName").value : "New schedule";
   $("scheduleDialogTitle").textContent = editingScheduleId ? "Edit schedule" : "Add to schedule";
   $("scheduleSave").textContent = editingScheduleId ? "Save changes" : "Save schedule";
   $("scheduleDialog").showModal();
 }
+function addPostTime(value = "") {
+  const row = document.createElement("div");
+  row.className = "schedule-time-row";
+  const input = document.createElement("input");
+  input.type = "time";
+  input.required = true;
+  input.className = "schedule-post-time";
+  input.value = value;
+  input.setAttribute("aria-label", "Daily post time");
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "quiet danger";
+  remove.textContent = "Remove";
+  remove.onclick = () => row.remove();
+  row.append(input, remove);
+  $("schedulePostTimes").append(row);
+}
+$("addPostTime").onclick = () => addPostTime();
 async function saveComposedSchedule(event) {
   event.preventDefault();
-  const messages = messageValues().filter((text) => text.trim()), channels = [...$("scheduleChannels").selectedOptions].map((option) => Number(option.value)), hours = Number($("scheduleHours").value), minutes = Number($("scheduleMinutes").value), interval = (hours * 60 + minutes) * 60;
+  const messages = messageValues().filter((text) => text.trim()), channels = [...$("scheduleChannels").selectedOptions].map((option) => Number(option.value)), post_times = [...document.querySelectorAll(".schedule-post-time")].map((input) => input.value).filter(Boolean);
   if (!messages.length) {
     $("scheduleError").textContent = "Add at least one non-empty message.";
     return;
@@ -2658,11 +2667,11 @@ async function saveComposedSchedule(event) {
     $("scheduleError").textContent = "Select at least one radio channel.";
     return;
   }
-  if (interval < 1800) {
-    $("scheduleError").textContent = "Schedule interval must be at least 30 minutes.";
+  if (!post_times.length) {
+    $("scheduleError").textContent = "Add at least one daily post time.";
     return;
   }
-  const payload = { name: $("scheduleName").value.trim(), channels, messages, interval, message_delay: Number($("scheduleDelay").value), send_at: $("scheduleSendAt").value, enabled: true };
+  const payload = { name: $("scheduleName").value.trim(), channels, messages, interval: 1800, message_delay: Number($("scheduleDelay").value), post_times, enabled: true };
   if (editingScheduleId) payload.id = editingScheduleId;
   $("scheduleSave").disabled = true;
   $("scheduleError").textContent = "Saving schedule\u2026";
@@ -2693,10 +2702,9 @@ async function loadScheduleForComposer() {
     $("delayInput").value = Math.max(1, schedule.message_delay || 2);
     buildScheduleDialog();
     $("scheduleName").value = schedule.name;
-    $("scheduleSendAt").value = schedule.send_at || "09:00";
-    $("scheduleHours").value = Math.floor(schedule.interval / 3600);
-    $("scheduleMinutes").value = Math.floor(schedule.interval % 3600 / 60);
     $("scheduleDelay").value = schedule.message_delay || 0;
+    $("schedulePostTimes").replaceChildren();
+    for (const value of schedule.post_times || [schedule.send_at || "09:00"]) addPostTime(value);
     await loadScheduleChannels(schedule.channels);
     $("scheduleDialogTitle").textContent = "Edit scheduled sequence";
     $("scheduleSave").textContent = "Save changes";
@@ -2707,5 +2715,5 @@ async function loadScheduleForComposer() {
 }
 $("scheduleOpenButton").onclick = () => openScheduleDialog();
 renderMessages([""]);
-renderSaved();
+loadServerLists();
 connect().then(loadScheduleForComposer);
