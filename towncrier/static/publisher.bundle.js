@@ -1037,7 +1037,7 @@ function parseTemplate(htmlString) {
 }
 var parseCache = /* @__PURE__ */ new WeakMap();
 var domInstancesCache = /* @__PURE__ */ new WeakMap();
-var unkeyedSymbol = Symbol("un-keyed");
+var unkeyedSymbol = /* @__PURE__ */ Symbol("un-keyed");
 var hasReplaceChildren = "replaceChildren" in Element.prototype;
 function replaceChildren(parentNode, newChildren) {
   if (hasReplaceChildren) {
@@ -2398,38 +2398,47 @@ async function saveServerList(name, messages) {
   renderSaved();
 }
 function renderSaved() {
-  for (const root of [$("savedLists"), $("loadSavedLists")]) {
-    root.replaceChildren();
-    const data = lists(), names = Object.keys(data).sort((a, b) => a.localeCompare(b));
-    if (!names.length) {
-      root.innerHTML = '<p class="status">No saved pages yet.</p>';
-      continue;
-    }
-    names.forEach((name) => {
-      const row = document.createElement("div");
-      row.className = "saved-item";
-      const info = document.createElement("span");
-      info.textContent = name;
-      const count = document.createElement("small");
-      count.textContent = `${data[name].length} messages`;
-      const left = document.createElement("div");
-      left.append(info, document.createTextNode(" \xB7 "), count);
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      const load = document.createElement("button");
-      load.className = "quiet";
-      load.textContent = "Load";
-      load.onclick = () => {
-        renderMessages(data[name]);
-        $("pageName").value = name;
-        $("sendStatus").textContent = `Loaded \u201C${name}\u201D.`;
-        $("loadDialog").close();
-      };
-      actions.append(load);
-      row.append(left, actions);
-      root.append(row);
-    });
+  const root = $("savedLists");
+  root.replaceChildren();
+  const data = lists(), names = Object.keys(data).sort((a, b) => a.localeCompare(b));
+  if (!names.length) {
+    root.innerHTML = '<p class="status">No saved pages yet.</p>';
+    return;
   }
+  names.forEach((name) => {
+    const row = document.createElement("div");
+    row.className = "saved-item";
+    const info = document.createElement("span");
+    info.textContent = name;
+    const count = document.createElement("small");
+    count.textContent = `${data[name].length} messages`;
+    const left = document.createElement("div");
+    left.append(info, document.createTextNode(" \xB7 "), count);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const load = document.createElement("button");
+    load.className = "quiet";
+    load.textContent = "Load";
+    load.onclick = () => {
+      renderMessages(data[name]);
+      $("pageName").value = name;
+      $("sendStatus").textContent = `Loaded \u201C${name}\u201D.`;
+    };
+    const exportButton = document.createElement("button");
+    exportButton.className = "quiet";
+    exportButton.textContent = "Export";
+    exportButton.onclick = () => exportPage(name, data[name]);
+    actions.append(load, exportButton);
+    row.append(left, actions);
+    root.append(row);
+  });
+}
+function exportPage(name, messages) {
+  const blob = new Blob([JSON.stringify({ version: 1, pages: { [name]: messages } }, null, 2)], { type: "application/json" }), a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name.replace(/[^a-z0-9_-]+/gi, "_")}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 function updateButtons() {
   const connected = !!publisher, roomName = $("roomServerSelect").selectedOptions[0]?.textContent || "no room selected";
@@ -2514,14 +2523,6 @@ $("previewCloseButton").onclick = () => $("previewDialog").close();
 window.addEventListener("resize", () => {
   if ($("previewDialog").open) updatePreviewScale();
 });
-$("saveOpenButton").onclick = () => {
-  $("saveDialog").showModal();
-  $("pageName").focus();
-};
-$("loadOpenButton").onclick = () => {
-  $("loadDialog").showModal();
-  renderSaved();
-};
 $("saveButton").onclick = async () => {
   const name = $("pageName").value.trim();
   if (!name) {
@@ -2531,17 +2532,9 @@ $("saveButton").onclick = async () => {
   try {
     await saveServerList(name, messageValues());
     $("sendStatus").textContent = `Saved \u201C${name}\u201D on the server.`;
-    $("saveDialog").close();
   } catch (error) {
     $("sendStatus").textContent = `Save failed: ${error.message}`;
   }
-};
-$("exportButton").onclick = () => {
-  const blob = new Blob([JSON.stringify({ version: 1, pages: lists() }, null, 2)], { type: "application/json" }), a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "meshpagepub-pages.json";
-  a.click();
-  URL.revokeObjectURL(a.href);
 };
 $("importInput").onchange = async (e) => {
   try {
@@ -2549,14 +2542,11 @@ $("importInput").onchange = async (e) => {
     if (!file) return;
     const obj = JSON.parse(await file.text()), imported = obj.pages || obj;
     if (!imported || typeof imported !== "object" || Array.isArray(imported)) throw Error();
-    const clean = { ...lists() };
     for (const [k, v] of Object.entries(imported)) {
       if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) throw Error();
-      clean[k] = v;
+      await saveServerList(k, v);
     }
-    saveServerList(Object.keys(clean)[0], clean[Object.keys(clean)[0]]);
     $("sendStatus").textContent = "Pages imported.";
-    $("loadDialog").close();
   } catch {
     $("sendStatus").textContent = "Import failed: expected a JSON object of named string pages.";
   }

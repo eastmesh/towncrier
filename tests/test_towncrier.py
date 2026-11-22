@@ -153,7 +153,7 @@ class StoreTests(unittest.TestCase):
 class WebUiTests(unittest.TestCase):
     def test_publisher_page_contains_composer_and_room_auth_controls(self):
         page=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
-        for control in ('id="messages"','id="sendButton"','id="roomPassword"','id="previewDialog"','id="saveDialog"','id="loadDialog"'):
+        for control in ('id="messages"','id="sendButton"','id="roomPassword"','id="previewDialog"','id="saveButton"','id="importInput"','id="savedLists"'):
             self.assertIn(control,page)
 
     def test_publisher_composer_has_per_message_add_delete_and_order_controls(self):
