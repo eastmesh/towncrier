@@ -231,10 +231,10 @@ class WebUiTests(unittest.TestCase):
                     page=response.read().decode()
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
-        self.assertIn('href="/"',page)
-        self.assertIn('Create schedule in the composer',page)
-        self.assertNotIn('id="schedule-form"',page)
-        self.assertNotIn('id="messages"',page)
+        self.assertIn('href="/schedules"',page)
+        self.assertIn('id="schedule-form"',page)
+        self.assertIn('SCHEDULE SETUP',page)
+        self.assertIn('id="messages"',page)
 
     def test_radio_settings_are_a_separate_themed_tab(self):
         tmp=tempfile.TemporaryDirectory()
@@ -304,11 +304,11 @@ class WebUiTests(unittest.TestCase):
                     page=response.read().decode()
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
-        self.assertNotIn('aria-posinset=',page)
-        self.assertNotIn('id="messages"',page)
-        self.assertNotIn('message-editor-panel',page)
-        self.assertIn('Edit in composer',page)
-        self.assertIn('Saved schedules',page)
+        self.assertIn('aria-posinset=',page)
+        self.assertIn('id="messages"',page)
+        self.assertIn('message-editor-panel',page)
+        self.assertIn('SCHEDULE SETUP',page)
+        self.assertIn('SAVED SCHEDULES',page)
 
     def test_save_edit_preserves_next_post_time_and_message_order(self):
         import urllib.parse
