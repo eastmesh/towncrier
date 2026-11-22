@@ -59,6 +59,15 @@ class StoreTests(unittest.TestCase):
         self.s.delete(row["id"])
         self.assertIsNone(self.s.get(row["id"]))
         with self.assertRaises(ValueError): self.s.save({"name":"x","channel":2,"messages":[],"interval":1740})
+    def test_bot_messages_persist_and_round_trip(self):
+        tmp=tempfile.TemporaryDirectory(); path=Path(tmp.name)/"messages.db"
+        try:
+            store=Store(path)
+            store.record_bot_message(1,"Nastic: testing",True)
+            self.assertEqual(store.bot_messages(1)[0]["text"],"Nastic: testing")
+            self.assertTrue(Store(path).bot_messages(1)[0]["triggered"])
+        finally: tmp.cleanup()
+
     def test_legacy_single_message_is_migrated(self):
         path = Path(self.tmp.name) / "legacy.db"
         with sqlite3.connect(path) as db:

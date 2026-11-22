@@ -1,8 +1,32 @@
 import asyncio,threading,time
+from collections import deque
 from .radio import Radio
 TARGET_CHARS=120
 MAX_CHUNK=130
 MESSAGE_DELAY=3
+
+_bot_messages=deque(maxlen=100)
+_bot_messages_lock=threading.Lock()
+
+def recent_bot_messages(channel=None):
+ with _bot_messages_lock:
+  rows=list(_bot_messages)
+ if channel is not None: rows=[row for row in rows if row["channel"]==channel]
+ return rows
+
+def record_bot_message(channel,text,triggered=False,error=""):
+ with _bot_messages_lock:
+  _bot_messages.append({"time":time.time(),"channel":channel,"text":text,"triggered":triggered,"error":error})
+ set_bot_status(last_message={"time":time.time(),"channel":channel,"text":text})
+
+_bot_status={"state":"idle","channel":None,"last_message":None,"error":""}
+_bot_status_lock=threading.Lock()
+
+def bot_listener_status():
+ with _bot_status_lock: return dict(_bot_status)
+
+def set_bot_status(**values):
+ with _bot_status_lock: _bot_status.update(values)
 
 def split_message(message):
  if "\n" not in message and "\r" not in message:
@@ -50,10 +74,17 @@ class BotListener(threading.Thread):
   radio=Radio.from_store(self.store); mc=await radio._connect(); subscription=None
   enabled,channel,trigger,page_name=self._config()
   if not enabled or channel<0 or not trigger or not page_name:
+   set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
    await mc.disconnect(); return
+  set_bot_status(state="listening",channel=channel,error="")
   async def on_message(event):
    payload=getattr(event,"payload",None) or {}; text=str(payload.get("text", "")); incoming_channel=payload.get("channel_idx")
-   if incoming_channel!=channel or not text.lower().startswith(trigger.lower()): return
+   if incoming_channel!=channel: return
+   matched_text=text.split(":",1)[1].lstrip() if ":" in text else text
+   matched=matched_text.lower().startswith(trigger.lower())
+   record_bot_message(channel,text,matched)
+   self.store.record_bot_message(channel,text,matched)
+   if not matched: return
    page=next((item for item in self.store.saved_lists() if item["name"]==page_name),None)
    if not page: return
    for message in page["messages"]:
@@ -61,9 +92,16 @@ class BotListener(threading.Thread):
      result=await mc.commands.send_chan_msg(channel,chunk)
      if getattr(result,"type",None)==EventType.ERROR: raise RuntimeError(result.payload)
   try:
-   subscription=mc.dispatcher.subscribe(EventType.CHANNEL_MSG_RECV,on_message,attribute_filters={"channel_idx":channel})
-   await mc.start_auto_message_fetching()
-   while not self.stop_event.is_set(): await asyncio.sleep(1)
+   set_bot_status(state="draining",channel=channel,error="Clearing previously queued radio messages")
+   while True:
+    pending=await mc.commands.get_msg()
+    if getattr(pending,"type",None) in {EventType.NO_MORE_MSGS,EventType.ERROR}: break
+   subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
+   set_bot_status(state="polling",channel=channel,error="")
+   while not self.stop_event.is_set():
+    result=await mc.commands.get_msg()
+    if getattr(result,"type",None)==EventType.ERROR and getattr(result,"payload",{}).get("reason")!="no_event_received": set_bot_status(state="error",channel=channel,error=str(result.payload))
+    await asyncio.sleep(0.25)
   finally:
    if subscription is not None:
     try: mc.unsubscribe(subscription)
@@ -77,7 +115,8 @@ class BotListener(threading.Thread):
    if not enabled or channel<0 or not trigger or not page_name:
     self.stop_event.wait(5); continue
    try: asyncio.run(self._run_async())
-   except Exception: self.stop_event.wait(10)
+   except Exception as exc:
+    set_bot_status(state="error",error=str(exc)); self.stop_event.wait(10)
 class Scheduler(threading.Thread):
  daemon=True
  def __init__(self,store,stop_event): super().__init__(); self.store,self.stop_event=store,stop_event

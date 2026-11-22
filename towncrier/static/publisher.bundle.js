@@ -1037,7 +1037,7 @@ function parseTemplate(htmlString) {
 }
 var parseCache = /* @__PURE__ */ new WeakMap();
 var domInstancesCache = /* @__PURE__ */ new WeakMap();
-var unkeyedSymbol = /* @__PURE__ */ Symbol("un-keyed");
+var unkeyedSymbol = Symbol("un-keyed");
 var hasReplaceChildren = "replaceChildren" in Element.prototype;
 function replaceChildren(parentNode, newChildren) {
   if (hasReplaceChildren) {
@@ -2655,7 +2655,7 @@ function addPostTime(value = "") {
   row.append(input, remove);
   $("schedulePostTimes").append(row);
 }
-$("addPostTime").onclick = () => addPostTime();
+if ($("addPostTime")) $("addPostTime").onclick = () => addPostTime();
 async function saveComposedSchedule(event) {
   event.preventDefault();
   const messages = messageValues().filter((text) => text.trim()), channels = [...$("scheduleChannels").selectedOptions].map((option) => Number(option.value)), post_times = [...document.querySelectorAll(".schedule-post-time")].map((input) => input.value).filter(Boolean);
@@ -2713,7 +2713,7 @@ async function loadScheduleForComposer() {
     $("sendStatus").textContent = `Could not load schedule: ${error.message}`;
   }
 }
-$("scheduleOpenButton").onclick = () => openScheduleDialog();
+if ($("scheduleOpenButton")) $("scheduleOpenButton").onclick = () => openScheduleDialog();
 renderMessages([""]);
 loadServerLists();
 connect().then(loadScheduleForComposer);
