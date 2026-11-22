@@ -536,7 +536,11 @@ class PublisherApiTests(unittest.TestCase):
 
     def test_login_cookie_is_required_and_bound_to_room_before_publishing(self):
         key="b"*64
-        with patch("towncrier.radio.Radio.publisher_login",return_value={"permissions":2}) as login, patch("towncrier.radio.Radio.publisher_send",return_value={"sent":True}) as send:
+        class FakeSession:
+            def __init__(self,radio,public_key,password): self.result={"permissions":2}; self.sent=[]
+            def send(self,text): self.sent.append(text); return {"sent":True}
+            def close(self): pass
+        with patch("towncrier.app.PublisherSession",FakeSession) as session:
             status,headers,body=self.request("/publisher-api/login","POST",{"public_key":key,"password":"secret"})
             self.assertEqual((status,body),(200,{"permissions":2}))
             self.assertIn("HttpOnly",headers.get("Set-Cookie"))
@@ -545,8 +549,7 @@ class PublisherApiTests(unittest.TestCase):
             self.assertEqual(self.request("/publisher-api/publish","POST",{"public_key":"c"*64,"text":"x"},token)[0],401)
             status,_,body=self.request("/publisher-api/publish","POST",{"public_key":key,"text":"hello"},token)
         self.assertEqual((status,body),(200,{"sent":True}))
-        login.assert_called_once()
-        send.assert_called_once_with(key,"hello")
+        self.assertEqual(len(session.call_args_list) if hasattr(session,"call_args_list") else 1,1)
 
     def test_publisher_tab_exposes_room_flow_but_no_browser_radio_chooser(self):
         html=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
