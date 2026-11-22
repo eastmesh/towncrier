@@ -96,8 +96,9 @@ class BotListener(threading.Thread):
      result=await mc.commands.send_chan_msg(channel,chunk)
      if getattr(result,"type",None)==EventType.ERROR: raise RuntimeError(result.payload)
   try:
-   subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message,attribute_filters={"channel_idx":channel})
+   subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
    await mc.start_auto_message_fetching()
+   await mc.commands.get_msg()
    set_bot_status(state="listening",channel=channel,error="")
    while not self.stop_event.is_set(): await asyncio.sleep(1)
   finally:
