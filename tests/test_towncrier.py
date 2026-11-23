@@ -234,7 +234,8 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('href="/schedules"',page)
         self.assertIn('id="schedule-form"',page)
         self.assertIn('SCHEDULE SETUP',page)
-        self.assertIn('id="messages"',page)
+        self.assertIn('name="page_name"',page)
+        self.assertIn('SCHEDULE SETUP',page)
 
     def test_radio_settings_are_a_separate_themed_tab(self):
         tmp=tempfile.TemporaryDirectory()
@@ -304,10 +305,11 @@ class WebUiTests(unittest.TestCase):
                     page=response.read().decode()
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
-        self.assertIn('aria-posinset=',page)
-        self.assertIn('id="messages"',page)
-        self.assertIn('message-editor-panel',page)
-        self.assertIn('SCHEDULE SETUP',page)
+        self.assertNotIn('aria-posinset=',page)
+        self.assertNotIn('id="messages"',page)
+        self.assertNotIn('message-editor-panel',page)
+        self.assertIn('name="page_name"',page)
+        self.assertIn('Daily post times',page)
         self.assertIn('SAVED SCHEDULES',page)
 
     def test_save_edit_preserves_next_post_time_and_message_order(self):
