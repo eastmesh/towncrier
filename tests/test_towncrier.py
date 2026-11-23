@@ -171,16 +171,48 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
         sleep.assert_awaited_once_with(7)
         self.assertEqual(mc.commands.fetches,0)
 
+    async def test_fetch_queued_messages_stops_after_a_normal_empty_response(self):
+        class Commands:
+            def __init__(self): self.fetches=0
+            async def get_msg(self):
+                self.fetches+=1
+                return type("Result",(),{"type":EventType.NO_MORE_MSGS,"payload":{}})()
+        class MeshCore:
+            def __init__(self): self.commands=Commands()
+        class EventType:
+            NO_MORE_MSGS=object(); ERROR=object()
+        listener=BotListener(None,threading.Event()); mc=MeshCore()
+        await listener._fetch_queued_messages(mc,EventType)
+        self.assertEqual(mc.commands.fetches,1)
+
+    async def test_fetch_queued_messages_reconnects_after_a_transport_error(self):
+        class Commands:
+            async def get_msg(self):
+                return type("Result",(),{"type":EventType.ERROR,"payload":{"error":"connection lost"}})()
+        class MeshCore:
+            commands=Commands()
+        class EventType:
+            NO_MORE_MSGS=object(); ERROR=object()
+        listener=BotListener(None,threading.Event())
+        with self.assertRaises(ConnectionError):
+            await listener._fetch_queued_messages(MeshCore(),EventType)
+
     async def test_trigger_with_extra_text_does_not_reply(self):
         class Commands:
             def __init__(self,mc): self.mc=mc; self.sent=[]
             async def get_msg(self):
-                await self.mc.callback(type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":2,"text":"Node: testing please reply"}})())
-                self.mc.stop.set()
+                self.mc.fetches+=1
+                if self.mc.fetches==1:
+                    self.mc.callbacks[EventType.CHANNEL_MSG_RECV](type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":1,"text":"Node: testing"}})())
+                    self.mc.callbacks[EventType.MESSAGES_WAITING](object())
+                else:
+                    self.mc.callbacks[EventType.CHANNEL_MSG_RECV](type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":2,"text":"Node: testing please reply"}})())
+                    self.mc.stop.set()
+                return type("Result",(),{"type":EventType.NO_MORE_MSGS,"payload":{}})()
             async def send_chan_msg(self,channel,text): self.sent.append((channel,text)); return type("Result",(),{"type":None})()
         class MeshCore:
-            def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callback=None
-            def subscribe(self,_event,callback): self.callback=callback; return object()
+            def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callbacks={}; self.fetches=0
+            def subscribe(self,event,callback): self.callbacks[event]=callback; return object()
             def unsubscribe(self,_subscription): pass
             async def stop_auto_message_fetching(self): pass
             async def disconnect(self): pass
@@ -193,13 +225,13 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
             for key,value in (("bot_enabled","1"),("bot_channel","5"),("bot_trigger","testing"),("bot_page_name","Reply")):
                 store.set_setting(key,value)
             class EventType:
-                CHANNEL_MSG_RECV=object()
-                ERROR=object()
+                CHANNEL_MSG_RECV=object(); MESSAGES_WAITING=object(); NO_MORE_MSGS=object(); ERROR=object()
             stop=threading.Event(); mc=MeshCore(stop)
             with patch.dict(sys.modules,{"meshcore":type("MeshcoreModule",(),{"EventType":EventType})()}), patch("towncrier.engine.Radio.from_store",return_value=Radio(mc)):
                 await BotListener(store,stop)._run_async()
             history=store.bot_messages(5)
         self.assertEqual(mc.commands.sent,[])
+        self.assertEqual(len(history),1)
         self.assertFalse(history[0]["triggered"])
 
     async def test_triggered_reply_is_sent_before_the_listener_fetches_again(self):
@@ -207,13 +239,17 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self,mc): self.mc=mc; self.fetches=0; self.sent=[]
             async def get_msg(self):
                 self.fetches+=1
-                if self.fetches>1: raise AssertionError("listener fetched while a queued reply was pending")
-                await self.mc.callback(type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":1,"text":"Node: testing"}})())
+                if self.fetches==1:
+                    self.mc.callbacks[EventType.MESSAGES_WAITING](object())
+                elif self.fetches==2:
+                    self.mc.callbacks[EventType.CHANNEL_MSG_RECV](type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":1,"text":"Node: testing"}})())
+                else: raise AssertionError("listener fetched while a queued reply was pending")
+                return type("Result",(),{"type":EventType.NO_MORE_MSGS,"payload":{}})()
             async def send_chan_msg(self,channel,text):
                 self.sent.append((channel,text)); self.mc.stop.set(); return type("Result",(),{"type":None})()
         class MeshCore:
-            def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callback=None
-            def subscribe(self,_event,callback): self.callback=callback; return object()
+            def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callbacks={}
+            def subscribe(self,event,callback): self.callbacks[event]=callback; return object()
             def unsubscribe(self,_subscription): pass
             async def stop_auto_message_fetching(self): pass
             async def disconnect(self): pass
@@ -226,12 +262,11 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
             for key,value in (("bot_enabled","1"),("bot_channel","5"),("bot_trigger","testing"),("bot_page_name","Reply")):
                 store.set_setting(key,value)
             class EventType:
-                CHANNEL_MSG_RECV=object()
-                ERROR=object()
+                CHANNEL_MSG_RECV=object(); MESSAGES_WAITING=object(); NO_MORE_MSGS=object(); ERROR=object()
             stop=threading.Event(); mc=MeshCore(stop)
             with patch.dict(sys.modules,{"meshcore":type("MeshcoreModule",(),{"EventType":EventType})()}), patch("towncrier.engine.Radio.from_store",return_value=Radio(mc)):
                 await BotListener(store,stop)._run_async()
-        self.assertEqual(mc.commands.fetches,1)
+        self.assertEqual(mc.commands.fetches,2)
         self.assertEqual(mc.commands.sent,[(5,"reply")])
 
 class WebUiTests(unittest.TestCase):

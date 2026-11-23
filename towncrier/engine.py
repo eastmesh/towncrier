@@ -85,15 +85,24 @@ class BotListener(threading.Thread):
       continue
      raise RuntimeError(payload)
    if index+1<len(page["messages"]) and message_delay: await asyncio.sleep(message_delay)
+ async def _fetch_queued_messages(self,mc,event_type):
+  while True:
+   result=await mc.commands.get_msg(); result_type=getattr(result,"type",None); payload=getattr(result,"payload",None) or {}
+   if result_type==event_type.NO_MORE_MSGS: return
+   if result_type==event_type.ERROR:
+    reason=payload.get("reason") if isinstance(payload,dict) else None
+    if reason in {"no_event_received","no_more_msgs","timeout"}: return
+    raise ConnectionError(payload.get("error") if isinstance(payload,dict) else str(payload))
  async def _run_async(self):
   from meshcore import EventType
-  radio=Radio.from_store(self.store); mc=await radio._connect(); subscription=None; pending_replies=asyncio.Queue()
+  radio=Radio.from_store(self.store); mc=await radio._connect(); subscription=None; waiting_subscription=None; pending_replies=asyncio.Queue(); fetch_requested=asyncio.Event()
   enabled,channel,trigger,page_name,message_delay=self._config()
   if not enabled or channel<0 or not trigger or not page_name:
    set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
    await mc.disconnect(); return
-  set_bot_status(state="listening",channel=channel,error="")
-  async def on_message(event):
+  accept_messages=False
+  def on_message(event):
+   if not accept_messages: return
    try:
     payload=getattr(event,"payload",None) or {}; text=str(payload.get("text", "")); incoming_channel=payload.get("channel_idx")
     if incoming_channel!=channel: return
@@ -107,26 +116,30 @@ class BotListener(threading.Thread):
     if matched: pending_replies.put_nowait(page_name)
    except Exception as exc:
     set_bot_status(state="listening",channel=channel,error=f"message handling failed: {exc}")
+  def on_messages_waiting(_event): fetch_requested.set()
   try:
+   waiting_subscription=mc.subscribe(EventType.MESSAGES_WAITING,on_messages_waiting)
    subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
+   set_bot_status(state="draining",channel=channel,error="Clearing queued radio messages")
+   await self._fetch_queued_messages(mc,EventType)
+   dispatcher_queue=getattr(getattr(mc,"dispatcher",None),"queue",None)
+   if dispatcher_queue is not None: await dispatcher_queue.join()
+   accept_messages=True
    set_bot_status(state="listening",channel=channel,error="")
    while not self.stop_event.is_set():
     if self._config()!=(enabled,channel,trigger,page_name,message_delay): break
-    try:
-     await asyncio.wait_for(mc.commands.get_msg(),timeout=5)
-    except asyncio.TimeoutError:
-     continue
-    except Exception as exc:
-     set_bot_status(state="listening",channel=channel,error=f"message fetch retry failed: {exc}")
-     await asyncio.sleep(.5); continue
     while not pending_replies.empty():
      reply_page=await pending_replies.get()
      try: await self._post_page(mc,EventType,channel,reply_page,message_delay)
      except Exception as exc: set_bot_status(state="listening",channel=channel,error=f"post failed: {exc}")
+    try: await asyncio.wait_for(fetch_requested.wait(),timeout=.5)
+    except asyncio.TimeoutError: continue
+    fetch_requested.clear(); await self._fetch_queued_messages(mc,EventType)
   finally:
-   if subscription is not None:
-    try: mc.unsubscribe(subscription)
-    except Exception: pass
+   for item in (subscription,waiting_subscription):
+    if item is not None:
+     try: mc.unsubscribe(item)
+     except Exception: pass
    try: await mc.stop_auto_message_fetching()
    except Exception: pass
    await mc.disconnect()
@@ -137,7 +150,7 @@ class BotListener(threading.Thread):
     self.stop_event.wait(5); continue
    try: asyncio.run(self._run_async())
    except Exception as exc:
-    set_bot_status(state="error",error=str(exc)); self.stop_event.wait(10)
+    set_bot_status(state="reconnecting",channel=channel,error=f"radio connection lost; retrying: {exc}"); self.stop_event.wait(2)
 class Scheduler(threading.Thread):
  daemon=True
  def __init__(self,store,stop_event): super().__init__(); self.store,self.stop_event=store,stop_event
