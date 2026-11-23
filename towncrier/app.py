@@ -35,6 +35,26 @@ document.getElementById("schedule-form").addEventListener("submit",async functio
 class Handler(BaseHTTPRequestHandler):
  publisher_sessions={}
  publisher_sessions_lock=threading.Lock()
+ radio_snapshot_lock=threading.Lock()
+ radio_snapshot_cache=None
+ radio_snapshot_store_path=None
+ radio_snapshot_cached_at=0.0
+ radio_snapshot_ttl=15.0
+ def cached_radio_snapshot(self):
+  cls=type(self); now=time.monotonic(); store_path=self.store.path
+  with cls.radio_snapshot_lock:
+   cached=cls.radio_snapshot_cache
+   if cached is not None and cls.radio_snapshot_store_path==store_path and now-cls.radio_snapshot_cached_at<cls.radio_snapshot_ttl: return cached
+   try: snapshot=Radio.from_store(self.store).snapshot()
+   except Exception:
+    if cached is not None and cls.radio_snapshot_store_path==store_path: return cached
+    raise
+   cls.radio_snapshot_cache=snapshot; cls.radio_snapshot_store_path=store_path; cls.radio_snapshot_cached_at=now
+   return snapshot
+ @classmethod
+ def invalidate_radio_snapshot(cls):
+  with cls.radio_snapshot_lock:
+   cls.radio_snapshot_cache=None; cls.radio_snapshot_store_path=None; cls.radio_snapshot_cached_at=0.0
  def do_GET(self):
   path=urlparse(self.path).path
   if path=="/": return self.publisher_page()
@@ -186,6 +206,7 @@ class Handler(BaseHTTPRequestHandler):
     if not row: raise ValueError("schedule not found")
     send_message(Radio.from_store(self.store),row["channels"],row["messages"],row["message_delay"])
    else: return self.send_error(404)
+   if path in {"/settings","/radio-settings","/channel-save","/channel-delete"}: self.invalidate_radio_snapshot()
    if path=="/save" and ajax: return self.page()
    self.send_response(303); self.send_header("Location","/radio" if path in {"/settings","/radio-settings","/channel-save","/channel-delete"} else "/"); self.end_headers()
   except Exception as exc:
@@ -198,7 +219,7 @@ class Handler(BaseHTTPRequestHandler):
   channels=[]; channel_error=""; radio_settings={}; radio_error=""
   try:
 
-   radio_settings,channels=Radio.from_store(self.store).snapshot()
+   radio_settings,channels=self.cached_radio_snapshot()
    channels=[channel for channel in channels if str(channel.get("name") or "").strip() not in {"","-"}]
   except Exception as exc: radio_error=channel_error=str(exc)
   channel_options=channels
@@ -241,7 +262,7 @@ refreshBotStatus();refreshBotMessages();setInterval(refreshBotStatus,3000);setIn
   radio_settings={}; channels=[]; all_channels=[]
   try:
 
-   radio_settings,all_channels=Radio.from_store(self.store).snapshot()
+   radio_settings,all_channels=self.cached_radio_snapshot()
    channels=[channel for channel in all_channels if str(channel.get("name") or "").strip() not in {"","-"}]
   except Exception as exc:
    error=error or str(exc)

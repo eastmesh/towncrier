@@ -352,6 +352,29 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('name="page_name"',page)
         self.assertIn('SCHEDULE SETUP',page)
 
+    def test_schedules_reuses_a_recent_radio_snapshot(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"schedule-snapshot-cache.db")
+        Handler.radio_snapshot_cache=None; Handler.radio_snapshot_cached_at=0
+        calls=0
+        class Radio:
+            def snapshot(self):
+                nonlocal calls
+                calls+=1
+                return {},[{"index":0,"name":"General","configured":True}]
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.app.Radio.from_store",return_value=Radio()):
+                for _ in range(2):
+                    with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
+                        self.assertEqual(response.status,200)
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store
+            Handler.radio_snapshot_cache=None; Handler.radio_snapshot_store_path=None; Handler.radio_snapshot_cached_at=0
+            tmp.cleanup()
+        self.assertEqual(calls,1)
+
     def test_saved_schedule_load_link_stays_on_the_schedules_page(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
         store=Store(Path(tmp.name)/"schedule-load-link.db"); Handler.store=store
