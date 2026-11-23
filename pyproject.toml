@@ -12,4 +12,4 @@ towncrier = "towncrier.app:main"
 [tool.setuptools.packages.find]
 include = ["towncrier*"]
 [tool.setuptools.package-data]
-towncrier = ["static/*", "static/assets/*", "static/vendor/*"]
+towncrier = ["theme_tokens.json", "static/*", "static/assets/*", "static/vendor/*"]

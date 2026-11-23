@@ -53,9 +53,11 @@ var publisher = null;
 var loggedIn = false;
 var pages = {};
 function update() {
-  const ready = loggedIn && !!$("pageSelect").value && !$("roomServerSelect").value ? false : true;
-  $("connectionBadge").textContent = publisher ? "MeshPage Publisher radio" : "Disconnected";
-  $("connectionBadge").classList.toggle("connected", !!publisher);
+  const ready = loggedIn && !!$("pageSelect").value && !$("roomServerSelect").value ? false : true, badge = $("connectionBadge");
+  badge.classList.toggle("connected", !!publisher);
+  badge.classList.toggle("disconnected", !publisher);
+  badge.title = publisher ? "Radio connected" : "Radio disconnected";
+  badge.setAttribute("aria-label", badge.title);
   $("publishButton").disabled = !publisher || !loggedIn || !$("pageSelect").value;
 }
 async function loadPages() {

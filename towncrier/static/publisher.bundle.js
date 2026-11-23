@@ -2441,9 +2441,11 @@ function exportPage(name, messages) {
   URL.revokeObjectURL(a.href);
 }
 function updateButtons() {
-  const connected = !!publisher, roomName = $("roomServerSelect").selectedOptions[0]?.textContent || "no room selected";
-  $("connectionBadge").textContent = connected ? "MeshPage Publisher radio" : "Unavailable";
-  $("connectionBadge").classList.toggle("connected", connected);
+  const connected = !!publisher, roomName = $("roomServerSelect").selectedOptions[0]?.textContent || "no room selected", badge = $("connectionBadge");
+  badge.classList.toggle("connected", connected);
+  badge.classList.toggle("disconnected", !connected);
+  badge.title = connected ? "Radio connected" : "Radio disconnected";
+  badge.setAttribute("aria-label", badge.title);
   $("railConnectionStatus").textContent = connected ? `${loggedIn ? "Logged in" : "Using MeshPage Publisher radio"} \xB7 ${roomName}` : "MeshPage Publisher radio unavailable";
   $("connectionOpenButton").textContent = "Choose room server";
   $("refreshServersButton").disabled = !connected;

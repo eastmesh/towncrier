@@ -69,29 +69,30 @@ class BotListener(threading.Thread):
   enabled=self.store.setting("bot_enabled","0")=="1"; trigger=self.store.setting("bot_trigger","").strip(); page_name=self.store.setting("bot_page_name","").strip()
   try: channel=int(self.store.setting("bot_channel","-1"))
   except ValueError: channel=-1
-  return enabled,channel,trigger,page_name
+  try: message_delay=int(self.store.setting("bot_message_delay","3"))
+  except ValueError: message_delay=3
+  return enabled,channel,trigger,page_name,max(0,min(message_delay,3600))
+ async def _post_page(self,mc,event_type,channel,page_name,message_delay=3):
+  page=next((item for item in self.store.saved_lists() if item["name"]==page_name),None)
+  if not page: return
+  for index,message in enumerate(page["messages"]):
+   for chunk in split_message(message):
+    result=await mc.commands.send_chan_msg(channel,chunk)
+    result_type=getattr(result,"type",None); payload=getattr(result,"payload",None) or {}; reason=payload.get("reason") if isinstance(payload,dict) else None
+    if event_type and result_type==event_type.ERROR:
+     if reason in {"no_event_received","no_more_msgs","timeout"}:
+      set_bot_status(state="listening",channel=channel,error="send confirmation unavailable; listener remains active")
+      continue
+     raise RuntimeError(payload)
+   if index+1<len(page["messages"]) and message_delay: await asyncio.sleep(message_delay)
  async def _run_async(self):
   from meshcore import EventType
-  radio=Radio.from_store(self.store); mc=await radio._connect(); subscription=None
-  enabled,channel,trigger,page_name=self._config()
+  radio=Radio.from_store(self.store); mc=await radio._connect(); subscription=None; pending_replies=asyncio.Queue()
+  enabled,channel,trigger,page_name,message_delay=self._config()
   if not enabled or channel<0 or not trigger or not page_name:
    set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
    await mc.disconnect(); return
   set_bot_status(state="listening",channel=channel,error="")
-  async def post_page():
-   try:
-    page=next((item for item in self.store.saved_lists() if item["name"]==page_name),None)
-    if not page: return
-    for message in page["messages"]:
-     for chunk in split_message(message):
-      result=await mc.commands.send_chan_msg(channel,chunk)
-      result_type=getattr(result,"type",None)
-      if result_type==EventType.ERROR: raise RuntimeError(result.payload)
-      if str(result_type).lower() in {"no_event_received","no_more_msgs"}:
-       set_bot_status(state="listening",channel=channel,error="send confirmation unavailable; listener remains active")
-      await mc.commands.get_msg()
-   except Exception as exc:
-    set_bot_status(state="listening",channel=channel,error=f"post failed: {exc}")
   async def on_message(event):
    try:
     payload=getattr(event,"payload",None) or {}; text=str(payload.get("text", "")); incoming_channel=payload.get("channel_idx")
@@ -103,21 +104,25 @@ class BotListener(threading.Thread):
     matched=matched_text.lower().startswith(trigger.lower())
     record_bot_message(channel,text,matched)
     self.store.record_bot_message(channel,text,matched)
-    if matched: asyncio.create_task(post_page())
+    if matched: pending_replies.put_nowait(page_name)
    except Exception as exc:
     set_bot_status(state="listening",channel=channel,error=f"message handling failed: {exc}")
   try:
    subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
    set_bot_status(state="listening",channel=channel,error="")
    while not self.stop_event.is_set():
-    if self._config()!=(enabled,channel,trigger,page_name): break
+    if self._config()!=(enabled,channel,trigger,page_name,message_delay): break
     try:
      await asyncio.wait_for(mc.commands.get_msg(),timeout=5)
     except asyncio.TimeoutError:
      continue
     except Exception as exc:
      set_bot_status(state="listening",channel=channel,error=f"message fetch retry failed: {exc}")
-     await asyncio.sleep(.5)
+     await asyncio.sleep(.5); continue
+    while not pending_replies.empty():
+     reply_page=await pending_replies.get()
+     try: await self._post_page(mc,EventType,channel,reply_page,message_delay)
+     except Exception as exc: set_bot_status(state="listening",channel=channel,error=f"post failed: {exc}")
   finally:
    if subscription is not None:
     try: mc.unsubscribe(subscription)
@@ -127,7 +132,7 @@ class BotListener(threading.Thread):
    await mc.disconnect()
  def run(self):
   while not self.stop_event.is_set():
-   enabled,channel,trigger,page_name=self._config()
+   enabled,channel,trigger,page_name,message_delay=self._config()
    if not enabled or channel<0 or not trigger or not page_name:
     self.stop_event.wait(5); continue
    try: asyncio.run(self._run_async())

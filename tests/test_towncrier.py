@@ -1,6 +1,8 @@
+import asyncio
 import json
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -10,10 +12,10 @@ from urllib.request import Request, urlopen
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from towncrier.db import Store
 from towncrier.app import esc, Handler
-from towncrier.engine import Scheduler, send_message, split_message
+from towncrier.engine import BotListener, Scheduler, send_message, split_message
 
 class FakeStop:
     def __init__(self): self.calls = 0
@@ -150,6 +152,57 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.s.get(row["id"])["next_send"], 1900)
     def test_escape(self): self.assertEqual(esc('<script>'), '&lt;script&gt;')
 
+class BotListenerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_send_does_not_issue_a_competing_message_fetch(self):
+        class Commands:
+            def __init__(self): self.sent=[]; self.fetches=0
+            async def send_chan_msg(self,channel,text): self.sent.append((channel,text)); return type("Result",(),{"type":None})()
+            async def get_msg(self): self.fetches+=1
+        class MeshCore:
+            def __init__(self): self.commands=Commands()
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/"bot.db")
+            store.save_list("Reply",["first reply","second reply"])
+            listener=BotListener(store,threading.Event())
+            mc=MeshCore()
+            with patch("towncrier.engine.asyncio.sleep",new_callable=AsyncMock) as sleep:
+                await listener._post_page(mc,None,5,"Reply",7)
+        self.assertEqual(mc.commands.sent,[(5,"first reply"),(5,"second reply")])
+        sleep.assert_awaited_once_with(7)
+        self.assertEqual(mc.commands.fetches,0)
+
+    async def test_triggered_reply_is_sent_before_the_listener_fetches_again(self):
+        class Commands:
+            def __init__(self,mc): self.mc=mc; self.fetches=0; self.sent=[]
+            async def get_msg(self):
+                self.fetches+=1
+                if self.fetches>1: raise AssertionError("listener fetched while a queued reply was pending")
+                await self.mc.callback(type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":1,"text":"Node: testing"}})())
+            async def send_chan_msg(self,channel,text):
+                self.sent.append((channel,text)); self.mc.stop.set(); return type("Result",(),{"type":None})()
+        class MeshCore:
+            def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callback=None
+            def subscribe(self,_event,callback): self.callback=callback; return object()
+            def unsubscribe(self,_subscription): pass
+            async def stop_auto_message_fetching(self): pass
+            async def disconnect(self): pass
+        class Radio:
+            def __init__(self,mc): self.mc=mc
+            async def _connect(self): return self.mc
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/"bot-loop.db")
+            store.save_list("Reply",["reply"])
+            for key,value in (("bot_enabled","1"),("bot_channel","5"),("bot_trigger","testing"),("bot_page_name","Reply")):
+                store.set_setting(key,value)
+            class EventType:
+                CHANNEL_MSG_RECV=object()
+                ERROR=object()
+            stop=threading.Event(); mc=MeshCore(stop)
+            with patch.dict(sys.modules,{"meshcore":type("MeshcoreModule",(),{"EventType":EventType})()}), patch("towncrier.engine.Radio.from_store",return_value=Radio(mc)):
+                await BotListener(store,stop)._run_async()
+        self.assertEqual(mc.commands.fetches,1)
+        self.assertEqual(mc.commands.sent,[(5,"reply")])
+
 class WebUiTests(unittest.TestCase):
     def test_publisher_page_contains_composer_and_page_controls(self):
         page=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
@@ -206,8 +259,39 @@ class WebUiTests(unittest.TestCase):
             self.assertIn("Trigger word",page)
             self.assertIn("Channel",page)
             self.assertIn("Saved page",page)
+            self.assertIn('name="message_delay"',page)
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+
+    def test_bot_messages_endpoint_returns_only_the_latest_ten_messages(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"bot-history.db"); Handler.store=store
+        for index in range(12): store.record_bot_message(5,f"message {index}")
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/publisher-api/bot-messages?channel=5") as response:
+                messages=json.loads(response.read().decode())["messages"]
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertEqual(len(messages),10)
+
+    def test_bot_message_delay_form_persists(self):
+        import urllib.parse
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"bot-delay.db"); Handler.store=store
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            payload=urllib.parse.urlencode({"channel":"5","trigger":"testing","page_name":"Reply","message_delay":"7","enabled":"on"}).encode()
+            request=Request(f"http://127.0.0.1:{server.server_port}/bot",data=payload,headers={"Content-Type":"application/x-www-form-urlencoded"})
+            with urllib.request.urlopen(request) as response:
+                page=response.read().decode()
+            stored_delay=store.setting("bot_message_delay")
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertEqual(stored_delay,"7")
+        self.assertIn('name="message_delay" type="number" min="0" max="3600" value="7"',page)
 
     def test_bot_config_round_trips_and_trigger_posts_selected_list_to_channel(self):
         tmp=tempfile.TemporaryDirectory(); store=Store(Path(tmp.name)/"lists.db")
@@ -236,6 +320,66 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('SCHEDULE SETUP',page)
         self.assertIn('name="page_name"',page)
         self.assertIn('SCHEDULE SETUP',page)
+
+    def test_schedule_with_extra_daily_times_has_removal_controls(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"schedule-times.db"); Handler.store=store
+        ident=store.save({"name":"Morning","channels":[0],"messages":["hello"],"interval":3600,"post_times":["08:00","12:00","18:00"]})
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[{"index":0,"name":"General","configured":True}])):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules?edit={ident}") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertEqual(page.split('<script>',1)[0].count('data-action="remove-post-time"'),2)
+        self.assertIn('function refreshPostTimeControls()',page)
+
+    def test_schedule_channel_picker_shows_all_named_channels_only(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"named-schedule-channels.db")
+        channels=[
+            {"index":0,"name":"General","configured":True},
+            {"index":1,"name":"","configured":False},
+            {"index":5,"name":"Ops","configured":True},
+            {"index":8,"name":"-","configured":False},
+            {"index":9,"name":"Field","configured":True},
+        ]
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},channels)):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertIn('class="channel-picker"',page)
+        self.assertIn('value="9"',page)
+        self.assertIn('9 · Field',page)
+        self.assertNotIn('1 · Channel 1',page)
+        self.assertNotIn('8 · -',page)
+
+    def test_radio_channel_table_shows_all_named_channels_only(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"named-radio-channels.db")
+        channels=[
+            {"index":0,"name":"General","configured":True},
+            {"index":1,"name":"","configured":False},
+            {"index":8,"name":"-","configured":False},
+            {"index":52,"name":"Field","configured":True},
+        ]
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},channels)):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/radio") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertIn('<td>52</td><td>Field</td>',page)
+        self.assertNotIn('<td>1</td><td>—</td>',page)
+        self.assertNotIn('<td>8</td><td>-</td>',page)
 
     def test_radio_settings_are_a_separate_themed_tab(self):
         tmp=tempfile.TemporaryDirectory()
@@ -267,6 +411,31 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('name="tcp_host"',radio)
         self.assertIn('name="tcp_port"',radio)
 
+    def test_server_tabs_use_the_same_outer_card_spacing_as_publish(self):
+        css=(Path(__file__).parents[1]/"towncrier/static/publisher.css").read_text()
+        self.assertIn('.towncrier-scheduler{max-width:none;margin:34px auto;padding:0}',css)
+
+    def test_shared_theme_tokens_are_served_from_config_and_headers_use_status_dots(self):
+        root=Path(__file__).parents[1]/"towncrier/static"
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"theme-assets.db")
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/publisher.css") as response:
+                publisher_css=response.read().decode()
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/theme.css") as response:
+                theme_css=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        tokens=json.loads((Path(__file__).parents[1]/"towncrier/theme_tokens.json").read_text())
+        self.assertIn("--eastmesh-green:"+tokens["shared"]["eastmesh-green"],publisher_css)
+        self.assertIn("--em-bg:"+tokens["light"]["em-bg"],theme_css)
+        self.assertNotIn("--em-bg:#f3f6f4",(root/"theme.css").read_text())
+        for name in ("publisher.html","publish.html"):
+            page=(root/name).read_text()
+            self.assertIn('id="connectionBadge" class="radio-dot disconnected"',page)
+
     def test_light_mode_toggle_is_shared_and_persistent_across_pages(self):
         root=Path(__file__).parents[1]/"towncrier/static"
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
@@ -276,13 +445,14 @@ class WebUiTests(unittest.TestCase):
         try:
             pages=[]
             with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
-                for path in ("/", "/schedules", "/radio"):
+                for path in ("/", "/publish", "/schedules", "/bot", "/radio"):
                     with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}{path}") as response:
                         pages.append(response.read().decode())
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/theme.css") as response:
+                    css=response.read().decode()
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
         theme=(root/"theme.js").read_text() if (root/"theme.js").exists() else ""
-        css=(root/"theme.css").read_text()
         for page in pages:
             self.assertIn('id="themeToggle"',page)
             self.assertIn('aria-label="Switch to light mode"',page)

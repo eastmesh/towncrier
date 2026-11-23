@@ -1,4 +1,3 @@
-:root[data-theme="light"]{color-scheme:light;--em-bg:#f3f6f4;--em-panel:#fff;--em-panel-soft:#f0f4f1;--em-surface:#e6ede8;--em-muted:#58665e;--em-fg:#202b25;--em-fg-muted:#58665e;--em-accent:#27824f;--em-border:rgba(32,43,37,.15);--em-green-light:#267342;--em-blue:#245078}
 :root[data-theme="light"] body{background:var(--em-bg);color:var(--em-fg)}
 :root[data-theme="light"] .towncrier-header h1{color:var(--em-fg)}
 :root[data-theme="light"] .badge.connected{color:#202b25}
