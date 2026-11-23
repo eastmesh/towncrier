@@ -108,18 +108,16 @@ class BotListener(threading.Thread):
     set_bot_status(state="listening",channel=channel,error=f"message handling failed: {exc}")
   try:
    subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
-   await mc.start_auto_message_fetching()
-   await mc.commands.get_msg()
    set_bot_status(state="listening",channel=channel,error="")
    while not self.stop_event.is_set():
-    await asyncio.sleep(1)
-    fetch_task=getattr(mc,"_auto_fetch_task",None)
-    if fetch_task is not None and fetch_task.done():
-     try: await mc.commands.get_msg()
-     except Exception as exc: set_bot_status(state="listening",channel=channel,error=f"message fetch retry failed: {exc}")
-    current=self._config()
-    if current!=(enabled,channel,trigger,page_name):
-     break
+    if self._config()!=(enabled,channel,trigger,page_name): break
+    try:
+     await asyncio.wait_for(mc.commands.get_msg(),timeout=5)
+    except asyncio.TimeoutError:
+     continue
+    except Exception as exc:
+     set_bot_status(state="listening",channel=channel,error=f"message fetch retry failed: {exc}")
+     await asyncio.sleep(.5)
   finally:
    if subscription is not None:
     try: mc.unsubscribe(subscription)
