@@ -82,6 +82,22 @@ http://192.168.1.25:8080/
 
 Replace `192.168.1.25` with the address shown on your computer. If a firewall is enabled, allow port 8080 only on the trusted local-network profile. Do not use a public IP address, router port forwarding, or an internet-facing reverse proxy unless authentication and HTTPS are added first.
 
+## Update Towncrier
+
+For an existing Git-based installation, run the updater from the application checkout:
+
+```bash
+sudo /opt/towncrier/update.sh
+```
+
+It refuses to overwrite local edits, fast-forwards the `main` branch from GitHub, installs or updates all Python dependencies in `/opt/towncrier/.venv`, verifies the Towncrier command, and restarts the `towncrier` service when it is installed. The database in `/var/lib/towncrier` is preserved.
+
+To update without restarting immediately:
+
+```bash
+sudo /opt/towncrier/update.sh --no-restart
+```
+
 ## 4. Find the USB serial device
 
 For a serial/USB connection, the radio usually appears as `/dev/ttyUSB0` or `/dev/ttyACM0`. To see possible device names, return to the terminal and run:
