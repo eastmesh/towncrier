@@ -1,14 +1,26 @@
-import argparse, html, json, secrets, threading, time
+import argparse, html, json, secrets, signal, threading, time
 from http.cookies import SimpleCookie
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from .db import Store
-from .radio import Radio, PublisherSession
+from .radio import Radio, PublisherSession, PublisherSessionExpired
+from .shared_radio import SharedRadio
 from .engine import Scheduler, BotListener, send_message, recent_bot_messages, bot_listener_status
 from . import theme
 RADIO_PRESETS={"Australia":(915.800,250,10,5),"Australia (Narrow)":(916.575,62.5,7,7),"Australia (Mid)":(915.075,125,9,5),"Australia: SA, WA":(923.125,62.5,8,8),"Australia: QLD":(923.125,62.5,8,5)}
+def serial_device_paths(dev=Path("/dev")):
+ # Prefer persistent USB aliases without listing the same device twice.
+ paths=[]; seen=set()
+ for pattern in ("serial/by-id/*","serial/by-path/*","ttyACM*","ttyUSB*","tty.usb*","cu.usb*"):
+  for path in sorted(dev.glob(pattern)):
+   try: target=path.resolve(strict=True)
+   except (OSError,RuntimeError): continue
+   if target not in seen:
+    seen.add(target); paths.append(str(path))
+ return paths
+
 def esc(v): return html.escape(str(v),quote=True)
 def duration_parts(seconds): return int(seconds)//3600,(int(seconds)%3600)//60
 def duration_label(seconds):
@@ -130,20 +142,23 @@ class Handler(BaseHTTPRequestHandler):
    try:
     payload=json.loads(body.decode("utf-8"))
     if not isinstance(payload,dict): raise ValueError("request body must be a JSON object")
-    radio=Radio.from_store(self.store)
     if path.endswith("/login"):
+     radio=Radio.from_store(self.store)
      key=str(payload.get("public_key","" )).strip().lower()
      room_session=PublisherSession(radio,key,payload.get("password",""))
      result=room_session.result
      token=secrets.token_urlsafe(32)
+     retired=[]
      with self.publisher_sessions_lock:
       now=time.monotonic()
+      previous=SimpleCookie(); previous.load(self.headers.get("Cookie",""))
+      previous_token=previous.get("towncrier_publisher")
       for stale,session in list(self.publisher_sessions.items()):
-       if session[2]<=now:
-        try: session[3].close()
-        except Exception: pass
-        self.publisher_sessions.pop(stale,None)
+       if session[2]<=now or (previous_token and stale==previous_token.value and session[0]==self.client_address[0]):
+        retired.append(self.publisher_sessions.pop(stale)[3])
       self.publisher_sessions[token]=(self.client_address[0],key,now+28800,room_session)
+     for session in retired:
+      session.close()
      return self.respond(json.dumps(result),"application/json",headers={"Set-Cookie":f"towncrier_publisher={token}; Path=/publisher-api; Max-Age=28800; HttpOnly; SameSite=Strict"})
     cookie=SimpleCookie(); cookie.load(self.headers.get("Cookie","")); morsel=cookie.get("towncrier_publisher")
     token=morsel.value if morsel else ""
@@ -154,14 +169,19 @@ class Handler(BaseHTTPRequestHandler):
       return self.respond(json.dumps({"error":"Log in to this room server again before publishing."}),"application/json",401)
      if session[2]<=time.monotonic():
       self.publisher_sessions.pop(token,None)
-      try: session[3].close()
-      except Exception: pass
-      return self.respond(json.dumps({"error":"Publisher session expired; log in again."}),"application/json",401)
+      expired=True
+     else: expired=False
      if session[0]!=self.client_address[0] or session[1]!=key:
       return self.respond(json.dumps({"error":"Publisher session is not authorized for this room server."}),"application/json",401)
      room_session=session[3]
+    if expired:
+     room_session.close()
+     return self.respond(json.dumps({"error":"Publisher session expired; log in again."}),"application/json",401)
     result=room_session.send(payload.get("text",""))
     return self.respond(json.dumps(result),"application/json")
+   except PublisherSessionExpired as exc:
+    with self.publisher_sessions_lock: self.publisher_sessions.pop(token,None)
+    return self.respond(json.dumps({"error":str(exc)}),"application/json",401)
    except (ValueError,UnicodeDecodeError) as exc:
     return self.respond(json.dumps({"error":str(exc)}),"application/json",400)
    except Exception as exc:
@@ -192,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
      if not tcp_host or len(tcp_host)>253 or any(char.isspace() for char in tcp_host) or any(char in tcp_host for char in "/?#@"):
       raise ValueError("enter a TCP companion hostname or IP address")
      if not 1<=int(tcp_port)<=65535: raise ValueError("TCP port must be between 1 and 65535")
-    self.store.set_setting("connection_type",connection_type); self.store.set_setting("port",serial_port); self.store.set_setting("baud",baud); self.store.set_setting("tcp_host",tcp_host); self.store.set_setting("tcp_port",tcp_port)
+    self.store.set_settings(connection_type=connection_type,port=serial_port,baud=baud,tcp_host=tcp_host,tcp_port=tcp_port)
    elif path=="/radio-settings":
     preset=form.get("preset","")
     if preset not in RADIO_PRESETS: raise ValueError("choose a valid Australian MeshCore preset")
@@ -322,7 +342,7 @@ refreshBotStatus();refreshBotMessages();setInterval(refreshBotStatus,3000);setIn
     out+='<tr><td>'+str(channel["index"])+'</td><td>'+esc(channel["name"] or '—')+'</td><td>'+('Configured' if channel["configured"] else 'Empty')+'</td><td>'+('<form class="inline" method="post" action="/channel-delete"><input type="hidden" name="channel_index" value="'+str(channel["index"])+ '"><button class="danger">Delete</button></form>' if channel["configured"] else '<span class="muted">Available</span>')+'</td></tr>'
   else: out+='<tr><td class="muted" colspan="4">No radio channel data is available yet.</td></tr>'
   out+='</tbody></table></div><form class="channel-form" method="post" action="/channel-save"><h3>Add or replace a channel</h3><div class="grid"><label>Slot<select required name="channel_index">'+''.join('<option value="'+str(channel["index"])+ '">'+str(channel["index"])+(' · '+esc(channel["name"]) if channel["configured"] else ' · empty')+'</option>' for channel in slots)+'</select></label><label>Channel name<input required maxlength="32" name="channel_name"></label><label>Private secret<input name="channel_secret" maxlength="32" pattern="[0-9a-fA-F]{32}" placeholder="32 hex characters, blank for #name"></label></div><button class="secondary">Save channel on radio</button></form></section>'
-  out+='<section class="card"><p class="eyebrow">DEVICE</p><h2>MeshPage Publisher radio connection</h2><p class="muted">These connection settings are used by the Scheduler and Publisher.</p><form method="post" action="/settings" id="connection-form"><label>Connection type<select id="connection-type" name="connection_type"><option value="serial"'+(' selected' if connection_type=="serial" else '')+'>Serial / USB companion</option><option value="tcp"'+(' selected' if connection_type=="tcp" else '')+'>TCP companion</option></select></label><div id="serial-fields" class="grid radio-transport-fields"'+serial_hidden+'><label>Serial device<input name="port" value="'+esc(self.store.setting("port","/dev/ttyUSB0"))+'"></label><label>Baud rate<input name="baud" type="number" min="1" value="'+esc(self.store.setting("baud","115200"))+'"></label></div><div id="tcp-fields" class="grid radio-transport-fields"'+tcp_hidden+'><label>Companion host or IP<input name="tcp_host" placeholder="192.168.1.50 or mesh.local" value="'+esc(self.store.setting("tcp_host",""))+'"></label><label>TCP port<input name="tcp_port" type="number" min="1" max="65535" value="'+esc(self.store.setting("tcp_port","4000"))+'"></label></div><button class="secondary">Save connection settings</button></form><script>(()=>{const mode=document.getElementById("connection-type"),groups={serial:document.getElementById("serial-fields"),tcp:document.getElementById("tcp-fields")};function sync(){for(const [name,group] of Object.entries(groups)){const active=mode.value===name;group.hidden=!active;for(const field of group.querySelectorAll("input")){field.disabled=!active;field.required=active}}}mode.addEventListener("change",sync);sync()})();</script></section>'
+  out+='<section class="card"><p class="eyebrow">DEVICE</p><h2>MeshPage Publisher radio connection</h2><p class="muted">The server shares this companion connection across Publisher, Bot, Scheduler, and Radio Settings.</p><form method="post" action="/settings" id="connection-form"><label>Connection type<select id="connection-type" name="connection_type"><option value="serial"'+(' selected' if connection_type=="serial" else '')+'>Serial / USB companion</option><option value="tcp"'+(' selected' if connection_type=="tcp" else '')+'>TCP companion</option></select></label><div id="serial-fields" class="grid radio-transport-fields"'+serial_hidden+'><label>Serial device<input name="port" list="serial-devices" value="'+esc(self.store.setting("port","/dev/ttyUSB0"))+'"></label><datalist id="serial-devices">'+''.join('<option value="'+esc(path)+'"></option>' for path in serial_device_paths())+'</datalist><small>Choose a detected device or type a path. Reload this page after plugging in a device.</small><label>Baud rate<input name="baud" type="number" min="1" value="'+esc(self.store.setting("baud","115200"))+'"></label></div><div id="tcp-fields" class="grid radio-transport-fields"'+tcp_hidden+'><label>Companion host or IP<input name="tcp_host" placeholder="192.168.1.50 or mesh.local" value="'+esc(self.store.setting("tcp_host",""))+'"></label><label>TCP port<input name="tcp_port" type="number" min="1" max="65535" value="'+esc(self.store.setting("tcp_port","4000"))+'"></label></div><button class="secondary">Save connection settings</button></form><script>(()=>{const mode=document.getElementById("connection-type"),groups={serial:document.getElementById("serial-fields"),tcp:document.getElementById("tcp-fields")};function sync(){for(const [name,group] of Object.entries(groups)){const active=mode.value===name;group.hidden=!active;for(const field of group.querySelectorAll("input")){field.disabled=!active;field.required=active}}}mode.addEventListener("change",sync);sync()})();</script></section>'
   self.respond(out+'<script defer src="/theme.js"></script></main></body></html>')
  def publish_page(self):
   try: return self.respond((Path(__file__).parent/"static"/"publish.html").read_text(encoding="utf-8"))
@@ -348,8 +368,21 @@ refreshBotStatus();refreshBotMessages();setInterval(refreshBotStatus,3000);setIn
   self.end_headers(); self.wfile.write(data)
  def log_message(self,*args): pass
 def main(argv=None):
- p=argparse.ArgumentParser(); p.add_argument("--db",default="towncrier.db"); p.add_argument("--host",default="0.0.0.0"); p.add_argument("--port",type=int,default=8080); a=p.parse_args(argv); store=Store(a.db); Handler.store=store; stop=threading.Event(); Scheduler(store,stop).start(); BotListener(store,stop).start(); server=ThreadingHTTPServer((a.host,a.port),Handler)
- try: server.serve_forever()
- except KeyboardInterrupt: pass
- finally: stop.set(); server.server_close()
+ p=argparse.ArgumentParser(); p.add_argument("--db",default="towncrier.db"); p.add_argument("--host",default="0.0.0.0"); p.add_argument("--port",type=int,default=8080); a=p.parse_args(argv)
+ store=Store(a.db)
+ class ServerHandler(Handler):
+  publisher_sessions={}
+ ServerHandler.store=store
+ stop=threading.Event()
+ with ThreadingHTTPServer((a.host,a.port),ServerHandler) as server, SharedRadio(store):
+  scheduler=Scheduler(store,stop); bot=BotListener(store,stop)
+  scheduler.start(); bot.start()
+  def terminate(*_): raise KeyboardInterrupt
+  previous=signal.signal(signal.SIGTERM,terminate) if threading.current_thread() is threading.main_thread() else None
+  try: server.serve_forever()
+  except KeyboardInterrupt: pass
+  finally:
+   stop.set()
+   if previous is not None: signal.signal(signal.SIGTERM,previous)
+ bot.join(); scheduler.join(timeout=2)
 if __name__=="__main__": main()

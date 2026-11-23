@@ -547,6 +547,18 @@ class WebUiTests(unittest.TestCase):
         self.assertNotIn('<td>1</td><td>—</td>',page)
         self.assertNotIn('<td>8</td><td>-</td>',page)
 
+    def test_radio_serial_picker_prefers_stable_paths(self):
+        from towncrier.app import serial_device_paths
+        with tempfile.TemporaryDirectory() as tmp:
+            dev=Path(tmp)
+            (dev/"serial/by-id").mkdir(parents=True)
+            (dev/"ttyACM0").touch()
+            (dev/"ttyUSB1").touch()
+            stable=dev/"serial/by-id/mesh-radio"
+            stable.symlink_to("../../ttyACM0")
+            (dev/"serial/by-id/disconnected").symlink_to("../../ttyUSB9")
+            self.assertEqual(serial_device_paths(dev),[str(stable),str(dev/"ttyUSB1")])
+
     def test_radio_settings_are_a_separate_themed_tab(self):
         tmp=tempfile.TemporaryDirectory()
         old_store=getattr(Handler,"store",None)

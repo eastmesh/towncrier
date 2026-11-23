@@ -129,7 +129,9 @@ Open the **Radio Settings** tab and select **Serial / USB companion**. Its conne
 - **Serial device**: the device path, for example `/dev/ttyUSB0`.
 - **Baud rate**: normally `115200`. Only change this if your companion radio documentation specifies another value.
 
-For a TCP companion, select **TCP companion** and enter the companion host/IP and port. Click **Save connection settings**. The connection settings are shared by Scheduler and MeshPage Publisher, stored in `/var/lib/towncrier/towncrier.db`, and remain after a reboot.
+For a TCP companion, select **TCP companion** and enter the companion host/IP and port. Click **Save connection settings**. Towncrier stores these settings in `/var/lib/towncrier/towncrier.db` and uses one server-owned companion connection for Scheduler, Bot, Publisher, and Radio Settings. Run only one Towncrier server against the companion. The server reconnects after a dropped link and reopens the connection if the configured endpoint changes.
+
+Publisher must log in again after a reconnect. Browser sessions for different rooms can coexist; logging in to the same room from another browser replaces the earlier login because the room sees one radio identity. Publisher requires the companion to identify the room in its login success response.
 
 ### Choose a radio preset
 

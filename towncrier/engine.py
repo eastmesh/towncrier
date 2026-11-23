@@ -59,18 +59,22 @@ def split_message(message):
  if current: chunks.append(current)
  return chunks
 
-def send_message(radio,channel,message,delay=MESSAGE_DELAY):
+def send_message(radio,channel,message,delay=MESSAGE_DELAY,stop_event=None):
  channels=[channel] if isinstance(channel,int) else channel
  messages=[message] if isinstance(message,str) else message
  for target in channels:
   for index,text in enumerate(messages):
-   for chunk in split_message(text): radio.send(target,chunk)
-   if index+1<len(messages): time.sleep(delay)
+   for chunk in split_message(text):
+    if stop_event is not None and stop_event.is_set(): raise ConnectionError("Scheduler stopped")
+    radio.send(target,chunk)
+   if index+1<len(messages):
+    if stop_event is None: time.sleep(delay)
+    elif stop_event.wait(delay): raise ConnectionError("Scheduler stopped")
 
 class BotListener(threading.Thread):
  daemon=True
  def __init__(self,store,stop_event):
-  super().__init__(); self.store,self.stop_event=store,stop_event; self.seen_messages=set(); self.initial_drained=False
+  super().__init__(); self.store,self.stop_event=store,stop_event; self.seen_messages=set(); self.initial_drained=False; self.owner=getattr(store,"radio_owner",None)
  def _config(self):
   enabled=self.store.setting("bot_enabled","0")=="1"; trigger=self.store.setting("bot_trigger","").strip(); page_name=self.store.setting("bot_page_name","").strip()
   try: channel=int(self.store.setting("bot_channel","-1"))
@@ -78,6 +82,10 @@ class BotListener(threading.Thread):
   try: message_delay=int(self.store.setting("bot_message_delay","3"))
   except ValueError: message_delay=3
   return enabled,channel,trigger,page_name,max(0,min(message_delay,3600))
+ async def _command(self, mc, command_lock, name, *args):
+  if self.owner is not None:
+   return await self.owner.run_bot_command(mc,name,*args)
+  async with command_lock: return await getattr(mc.commands,name)(*args)
  async def _post_page(self,mc,event_type,channel,page_name,message_delay=3,command_lock=None):
   page=next((item for item in self.store.saved_lists() if item["name"]==page_name),None)
   if not page or not page["messages"]: raise RuntimeError(f"Saved reply page '{page_name}' is missing or empty")
@@ -86,7 +94,7 @@ class BotListener(threading.Thread):
   for index,message in enumerate(page["messages"]):
    for chunk in split_message(message):
     try:
-     async with command_lock: result=await mc.commands.send_chan_msg(channel,chunk)
+     result=await self._command(mc,command_lock,"send_chan_msg",channel,chunk)
     except TimeoutError:
      unconfirmed=True
      continue
@@ -106,7 +114,7 @@ class BotListener(threading.Thread):
   attempts=0
   while True:
    try:
-    async with command_lock: result=await mc.commands.get_msg()
+    result=await self._command(mc,command_lock,"get_msg")
    except TimeoutError:
     result=None
    result_type=getattr(result,"type",None); payload=getattr(result,"payload",None) or {}
@@ -131,7 +139,11 @@ class BotListener(threading.Thread):
    set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
    return
   config=(enabled,channel,trigger,page_name,message_delay)
-  radio=Radio.from_store(self.store); mc=await radio._connect()
+  if self.owner is not None:
+   async with self.owner.connection() as mc:
+    await mc.stop_auto_message_fetching()
+  else:
+   radio=Radio.from_store(self.store); mc=await radio._connect()
   subscription=waiting_subscription=None
   pending_replies=asyncio.Queue(); fetch_requested=asyncio.Event(); command_lock=asyncio.Lock()
   tasks=[]
@@ -182,7 +194,7 @@ class BotListener(threading.Thread):
     fetch_requested.clear()
     await self._fetch_queued_messages(mc,EventType,command_lock)
   try:
-   await mc.stop_auto_message_fetching()
+   if self.owner is None: await mc.stop_auto_message_fetching()
    waiting_subscription=mc.subscribe(EventType.MESSAGES_WAITING,on_messages_waiting)
    subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
    # Keep a single FIFO reply worker and a single fetch worker. Serialize only
@@ -190,11 +202,14 @@ class BotListener(threading.Thread):
    tasks=[asyncio.create_task(fetch_messages()),asyncio.create_task(post_replies())]
    while not self.stop_event.is_set():
     if self._config()!=config: break
-    if not mc.is_connected: raise ConnectionError("radio disconnected")
+    if not mc.is_connected or (self.owner is not None and mc is not self.owner.device): raise ConnectionError("radio disconnected")
     done,_=await asyncio.wait(tasks,timeout=.25,return_when=asyncio.FIRST_COMPLETED)
     if done:
      for task in done: task.result()
      break
+  except OSError:
+   if self.owner is not None: await self.owner.drop_if_current(mc)
+   raise
   finally:
    accept_messages=False
    for item in (subscription,waiting_subscription):
@@ -206,7 +221,8 @@ class BotListener(threading.Thread):
     await asyncio.gather(*tasks,return_exceptions=True)
     while not pending_replies.empty():
      self.store.finish_bot_reply(pending_replies.get_nowait(),"interrupted","Listener stopped before the reply started; not retried.")
-   finally: await mc.disconnect()
+   finally:
+    if self.owner is None: await mc.disconnect()
  def run(self):
   self.store.interrupt_pending_bot_replies()
   while not self.stop_event.is_set():
@@ -215,7 +231,9 @@ class BotListener(threading.Thread):
     self.initial_drained=False
     set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
     self.stop_event.wait(5); continue
-   try: asyncio.run(self._run_async())
+   try:
+    if self.owner is not None: self.owner.run(self._run_async)
+    else: asyncio.run(self._run_async())
    except Exception as exc:
     set_bot_status(state="reconnecting",channel=channel,error=f"radio connection lost; retrying: {exc}"); self.stop_event.wait(2)
 class Scheduler(threading.Thread):
@@ -225,7 +243,8 @@ class Scheduler(threading.Thread):
   while not self.stop_event.is_set():
    rows=self.store.due()
    for row in rows:
+    if self.stop_event.is_set(): break
     try:
-     send_message(Radio.from_store(self.store),row["channels"],row["messages"],row["message_delay"]); self.store.sent(row["id"],time.time(),row["interval"])
+     send_message(Radio.from_store(self.store),row["channels"],row["messages"],row["message_delay"],self.stop_event); self.store.sent(row["id"],time.time(),row["interval"])
     except Exception as exc: self.store.failed(row["id"],exc)
    self.stop_event.wait(1 if rows else 10)

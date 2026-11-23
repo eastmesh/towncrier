@@ -1,50 +1,31 @@
 import asyncio
 import hashlib
 import threading
+from contextlib import asynccontextmanager
+
+class PublisherSessionExpired(RuntimeError):
+ pass
 
 class PublisherSession:
  def __init__(self,radio,public_key,password):
-  self.radio,self.public_key,self.password=radio,public_key,password; self.loop=asyncio.new_event_loop(); self.thread=threading.Thread(target=self._serve,daemon=True); self.ready=threading.Event(); self.error=None; self.thread.start(); self.ready.wait(15)
-  if self.error: raise self.error
- def _serve(self):
-  asyncio.set_event_loop(self.loop); self.loop.create_task(self._login()); self.loop.run_forever()
- async def _login(self):
-  try:
-   self.mc=await self.radio._connect(); await self._login_on_connection(); self.ready.set()
-  except Exception as exc: self.error=exc; self.ready.set()
- async def _login_on_connection(self):
-  from meshcore import EventType
-  key=self.public_key; contacts=await self.mc.commands.get_contacts()
-  if contacts.type==EventType.ERROR: raise RuntimeError(contacts.payload)
-  contact=next((item for item in self.mc.contacts.values() if item.get("type")==3 and str(item.get("public_key","")).lower()==key),key)
-  future=self.loop.create_future(); prefix=key[:12]
-  def callback(event):
-   event_prefix=(getattr(event,"attributes",None) or {}).get("pubkey_prefix")
-   if (event_prefix is None or event_prefix==prefix) and not future.done(): self.loop.call_soon_threadsafe(future.set_result,event)
-  subscriptions=[self.mc.dispatcher.subscribe(EventType.LOGIN_SUCCESS,callback),self.mc.dispatcher.subscribe(EventType.LOGIN_FAILED,callback)]
-  try:
-   sent=await self.mc.commands.send_login(contact,self.password)
-   if sent is None or sent.type==EventType.ERROR: raise RuntimeError(getattr(sent,"payload",None))
-   result=await asyncio.wait_for(future,max(2.0,float(sent.payload.get("suggested_timeout",8000))/800.0+2.0))
-   if result.type!=EventType.LOGIN_SUCCESS: raise RuntimeError("Room login was rejected by the server.")
-   self.result=result.payload if isinstance(result.payload,dict) else {"permissions":result.payload}
-  finally:
-   for item in subscriptions: item.unsubscribe()
- async def _send(self,text):
-  from meshcore import EventType
-  result=await self.mc.commands.send_msg(self.public_key,text)
-  if result.type==EventType.ERROR: raise RuntimeError(result.payload)
-  return {"sent":True}
- def send(self,text): return asyncio.run_coroutine_threadsafe(self._send(text),self.loop).result(30)
+  self.owner=radio.owner
+  if self.owner is None: raise RuntimeError("Publisher needs the server-owned radio")
+  self.radio,self.public_key=radio,str(public_key).strip().lower()
+  self.identity=object()
+  self.result=radio._run(radio._publisher_login,self.public_key,password,self.identity)
+ def send(self,text):
+  return self.radio._run(self.radio._publisher_send,self.public_key,text,self.identity)
  def close(self):
-  async def shutdown(): await self.mc.disconnect()
-  asyncio.run_coroutine_threadsafe(shutdown(),self.loop).result(10)
-  self.loop.call_soon_threadsafe(self.loop.stop)
-  self.thread.join(timeout=2)
+  async def forget():
+   async with self.owner.lock:
+    if self.owner.room_sessions.get(self.public_key) is self.identity:
+     self.owner.room_sessions.pop(self.public_key)
+  return self.owner.run(forget)
 
 class Radio:
  _lock = threading.Lock()
  def __init__(self, port, baud, transport="serial", host="", tcp_port=4000):
+     self.owner = None
      self.port, self.baud = port, int(baud)
      self.transport = str(transport or "serial").strip().lower()
      self.host = str(host or "").strip()
@@ -52,13 +33,23 @@ class Radio:
      if self.transport not in {"serial", "tcp"}: raise ValueError("connection type must be serial or tcp")
  @classmethod
  def from_store(cls, store):
-     return cls(
-         store.setting("port", "/dev/ttyUSB0"),
-         store.setting("baud", "115200"),
-         transport=store.setting("connection_type", "serial"),
-         host=store.setting("tcp_host", ""),
-         tcp_port=store.setting("tcp_port", "4000"),
-     )
+     defaults = {"port":"/dev/ttyUSB0", "baud":"115200", "connection_type":"serial", "tcp_host":"", "tcp_port":"4000"}
+     config = store.settings(defaults) if hasattr(store,"settings") else {key:store.setting(key,default) for key,default in defaults.items()}
+     radio = cls(config["port"],config["baud"],transport=config["connection_type"],host=config["tcp_host"],tcp_port=config["tcp_port"])
+     radio.owner = getattr(store, "radio_owner", None)
+     return radio
+ @asynccontextmanager
+ async def _connection(self):
+     if self.owner is not None:
+         async with self.owner.connection() as mc:
+             yield mc
+     else:
+         mc = await self._connect()
+         try: yield mc
+         finally: await mc.disconnect()
+ def _run(self, operation, *args):
+     if self.owner is not None: return self.owner.run(operation, *args)
+     with self._lock: return asyncio.run(operation(*args))
  async def _connect(self):
      from meshcore import MeshCore
      if self.transport == "tcp":
@@ -73,15 +64,13 @@ class Radio:
      return mc
  async def _send(self, channel, message):
      from meshcore import EventType
-     mc = await self._connect()
-     try:
+     async with self._connection() as mc:
          result = await mc.commands.send_chan_msg(channel, message)
          if result.type == EventType.ERROR: raise RuntimeError(result.payload)
-     finally: await mc.disconnect()
  async def _snapshot(self):
      from meshcore import EventType
-     mc = await self._connect(); result=[]
-     try:
+     result=[]
+     async with self._connection() as mc:
          info = {key: mc.self_info.get(key) for key in ("radio_freq", "radio_bw", "radio_sf", "radio_cr")}
          device = await mc.commands.send_device_query()
          limit = int(device.payload.get("max_channels", 40)) if device.type == EventType.DEVICE_INFO else 40
@@ -93,19 +82,22 @@ class Radio:
              secret = channel.get("channel_secret", b"")
              result.append({"index": index, "name": name, "configured": bool(name or secret.strip(b"\\x00"))})
          return info, result
-     finally: await mc.disconnect()
  async def _radio_settings(self):
      return (await self._snapshot())[0]
  async def _set_radio(self, freq, bw, sf, cr):
      from meshcore import EventType
-     mc = await self._connect()
-     try:
+     async with self._connection() as mc:
          result = await mc.commands.set_radio(freq, bw, sf, cr)
          if result.type == EventType.ERROR and result.payload.get("reason") != "no_event_received":
              raise RuntimeError(result.payload)
-     finally: await mc.disconnect()
-     await asyncio.sleep(1)
-     settings = await self._radio_settings()
+         if self.owner is not None:
+             await asyncio.sleep(1)
+             info = await mc.commands.send_appstart()
+             if info.type != EventType.SELF_INFO: raise ConnectionError("radio did not confirm the radio settings")
+             settings = info.payload
+     if self.owner is None:
+         await asyncio.sleep(1)
+         settings = await self._radio_settings()
      expected = {"radio_freq": freq, "radio_bw": bw, "radio_sf": sf, "radio_cr": cr}
      if any(settings.get(key) != value for key, value in expected.items()):
          raise RuntimeError("radio did not confirm the radio settings")
@@ -114,26 +106,20 @@ class Radio:
      return (await self._snapshot())[1]
  async def _set_channel(self, index, name, secret):
      from meshcore import EventType
-     mc = await self._connect()
-     try:
+     async with self._connection() as mc:
          result = await mc.commands.set_channel(index, name, secret)
          if result.type == EventType.ERROR and result.payload.get("reason") != "no_event_received":
              raise RuntimeError(result.payload)
-     finally: await mc.disconnect()
-     await asyncio.sleep(1)
-     mc = await self._connect()
-     try:
+         await asyncio.sleep(1)
          event = await mc.commands.get_channel(index)
          if event.type == EventType.ERROR: raise RuntimeError(event.payload)
          channel = event.payload
          expected = hashlib.sha256(name.encode()).digest()[:16] if name.startswith("#") or secret is None else secret
          if channel.get("channel_name") != name or channel.get("channel_secret") != expected:
              raise RuntimeError("radio did not confirm the channel change")
-     finally: await mc.disconnect()
  async def _publisher_contacts(self):
      from meshcore import EventType
-     mc = await self._connect()
-     try:
+     async with self._connection() as mc:
          result = await mc.commands.get_contacts()
          if result.type == EventType.ERROR:
              raise RuntimeError(result.payload)
@@ -149,10 +135,8 @@ class Radio:
                  "name": contact.get("adv_name") or "Unnamed room server",
              })
          return rooms
-     finally:
-         await mc.disconnect()
 
- async def _publisher_login(self, public_key, password):
+ async def _publisher_login(self, public_key, password, identity=None):
      from meshcore import EventType
      key = str(public_key).strip().lower()
      if len(key) != 64 or any(char not in "0123456789abcdef" for char in key):
@@ -161,8 +145,11 @@ class Radio:
          raise ValueError("Enter the room password.")
      if len(password.encode("utf-8")) > 15:
          raise ValueError("Room password cannot exceed 15 UTF-8 bytes.")
-     mc = await self._connect()
-     try:
+     async with self._connection() as mc:
+         if self.owner is not None:
+             # Room permissions belong to the radio identity, not a browser.
+             # Retire the previous same-room grant before changing permissions.
+             self.owner.room_sessions.pop(key, None)
          contacts_result = await mc.commands.get_contacts()
          if contacts_result.type == EventType.ERROR:
              raise RuntimeError(contacts_result.payload)
@@ -177,7 +164,10 @@ class Radio:
          prefix = key[:12]
          def on_login(event):
              event_prefix = (getattr(event, "attributes", None) or {}).get("pubkey_prefix")
-             if (event_prefix is None or event_prefix == prefix) and not logged_in.done():
+             # Unidentified success is not a safe credential grant on a
+             # shared device: it could be a delayed reply for another room.
+             if (event_prefix == prefix or (event_prefix is None and
+                 (self.owner is None or event.type == EventType.LOGIN_FAILED))) and not logged_in.done():
                  logged_in.set_result(event)
          subscriptions = [
              mc.dispatcher.subscribe(EventType.LOGIN_SUCCESS, on_login),
@@ -194,14 +184,14 @@ class Radio:
                  raise RuntimeError("Room login failed or timed out; check the key, password, and radio reachability.") from exc
              if result.type != EventType.LOGIN_SUCCESS:
                  raise RuntimeError("Room login was rejected by the server.")
+             if self.owner is not None and identity is not None:
+                 self.owner.room_sessions[key] = identity
              return result.payload if isinstance(result.payload, dict) else {"permissions": result.payload}
          finally:
              for subscription in subscriptions:
                  subscription.unsubscribe()
-     finally:
-         await mc.disconnect()
 
- async def _publisher_send(self, public_key, text):
+ async def _publisher_send(self, public_key, text, identity=None):
      from meshcore import EventType
      key = str(public_key).strip().lower()
      if len(key) != 64 or any(char not in "0123456789abcdef" for char in key):
@@ -210,34 +200,33 @@ class Radio:
          raise ValueError("Message cannot be empty.")
      if len(text.encode("utf-8")) > 151:
          raise ValueError("Message exceeds the room-server limit of 151 UTF-8 bytes.")
-     mc = await self._connect()
-     try:
+     async with self._connection() as mc:
+         if self.owner is not None and (identity is None or self.owner.room_sessions.get(key) is not identity):
+             raise PublisherSessionExpired("Radio or room session changed; log in again before publishing.")
          result = await mc.commands.send_msg(key, text)
          if result.type == EventType.ERROR:
              raise RuntimeError(result.payload)
          return {"sent": True}
-     finally:
-         await mc.disconnect()
 
  def publisher_contacts(self):
-     with self._lock: return asyncio.run(self._publisher_contacts())
+     return self._run(self._publisher_contacts)
 
  def publisher_login(self, public_key, password):
-     with self._lock: return asyncio.run(self._publisher_login(public_key, password))
+     return self._run(self._publisher_login, public_key, password)
 
  def publisher_send(self, public_key, text):
-     with self._lock: return asyncio.run(self._publisher_send(public_key, text))
+     return self._run(self._publisher_send, public_key, text)
 
  def send(self, channel, message):
-     with self._lock: asyncio.run(self._send(channel, message))
+     return self._run(self._send, channel, message)
  def snapshot(self):
-     with self._lock: return asyncio.run(self._snapshot())
+     return self._run(self._snapshot)
  def radio_settings(self):
-     with self._lock: return asyncio.run(self._radio_settings())
+     return self._run(self._radio_settings)
  def set_radio(self, freq, bw, sf, cr):
-     with self._lock: return asyncio.run(self._set_radio(freq, bw, sf, cr))
+     return self._run(self._set_radio, freq, bw, sf, cr)
  def channels(self):
-     with self._lock: return asyncio.run(self._channels())
+     return self._run(self._channels)
  def set_channel(self, index, name, secret=None):
-     with self._lock: asyncio.run(self._set_channel(index, name, secret))
+     return self._run(self._set_channel, index, name, secret)
  def delete_channel(self, index): self.set_channel(index, "", b"\x00" * 16)

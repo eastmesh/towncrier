@@ -27,7 +27,13 @@ class Store:
   with self.lock,self.connect() as db:
    row=db.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone(); return row[0] if row else default
  def set_setting(self,key,value):
-  with self.lock,self.connect() as db: db.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
+  self.set_settings(**{key:value})
+ def set_settings(self,**values):
+  with self.lock,self.connect() as db:
+   db.executemany("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[(key,str(value)) for key,value in values.items()])
+ def settings(self,defaults):
+  with self.lock,self.connect() as db:
+   return {**defaults,**{row[0]:row[1] for row in db.execute("SELECT key,value FROM settings") if row[0] in defaults}}
  def saved_lists(self):
   with self.lock,self.connect() as db:
    return [{"name":row[0],"messages":[r[0] for r in db.execute("SELECT message FROM saved_list_messages WHERE list_name=? ORDER BY position",(row[0],))]} for row in db.execute("SELECT name FROM saved_lists ORDER BY name COLLATE NOCASE")]
