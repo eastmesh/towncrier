@@ -475,16 +475,17 @@ class WebUiTests(unittest.TestCase):
     def test_saved_schedule_load_link_stays_on_the_schedules_page(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
         store=Store(Path(tmp.name)/"schedule-load-link.db"); Handler.store=store
-        ident=store.save({"name":"Morning","channels":[0],"messages":["hello"],"interval":3600})
+        ident=store.save({"name":"Morning","channels":[0,3,7],"messages":["hello"],"interval":3600})
         server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
         thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
         try:
-            with patch("towncrier.radio.Radio.snapshot",return_value=({},[{"index":0,"name":"General","configured":True}])):
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[{"index":0,"name":"General & Events","configured":True},{"index":3,"name":"#local","configured":True},{"index":7,"name":"-","configured":False}])):
                 with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
                     page=response.read().decode()
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
         self.assertIn(f'href="/schedules?edit={ident}"',page)
+        self.assertIn("Channels: General &amp; Events, #local, Channel 7 ·",page)
 
     def test_schedule_with_extra_daily_times_has_removal_controls(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
@@ -646,6 +647,28 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('name="page_name"',page)
         self.assertIn('Daily post times',page)
         self.assertIn('SAVED SCHEDULES',page)
+
+    def test_send_now_posts_saved_messages_and_returns_to_schedules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/"send-now.db")
+            ident=store.save({"name":"Manual","channels":[1,3],"messages":["first","second"],"interval":1800,"message_delay":0,"enabled":False})
+            before=store.get(ident)
+            class TestHandler(Handler):
+                pass
+            TestHandler.store=store
+            with ThreadingHTTPServer(("127.0.0.1",0),TestHandler) as server:
+                thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+                try:
+                    with patch("towncrier.app.Radio.from_store") as radio:
+                        radio.return_value.snapshot.return_value=({},[])
+                        request=Request(f"http://127.0.0.1:{server.server_port}/send",data=f"id={ident}".encode())
+                        with urlopen(request,timeout=3) as response:
+                            destination=response.geturl()
+                        self.assertEqual([call.args for call in radio.return_value.send.call_args_list],[(1,"first"),(1,"second"),(3,"first"),(3,"second")])
+                    self.assertTrue(destination.endswith("/schedules"),destination)
+                    self.assertEqual(store.get(ident),before)
+                finally:
+                    server.shutdown(); thread.join()
 
     def test_save_edit_preserves_next_post_time_and_message_order(self):
         import urllib.parse
