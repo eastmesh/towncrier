@@ -78,23 +78,30 @@ class BotListener(threading.Thread):
    set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
    await mc.disconnect(); return
   set_bot_status(state="listening",channel=channel,error="")
+  async def post_page():
+   try:
+    page=next((item for item in self.store.saved_lists() if item["name"]==page_name),None)
+    if not page: return
+    for message in page["messages"]:
+     for chunk in split_message(message):
+      result=await mc.commands.send_chan_msg(channel,chunk)
+      if getattr(result,"type",None)==EventType.ERROR: raise RuntimeError(result.payload)
+   except Exception as exc:
+    set_bot_status(state="listening",channel=channel,error=f"post failed: {exc}")
   async def on_message(event):
-   payload=getattr(event,"payload",None) or {}; text=str(payload.get("text", "")); incoming_channel=payload.get("channel_idx")
-   if incoming_channel!=channel: return
-   key=(payload.get("sender_timestamp"),text,incoming_channel)
-   if key in self.seen_messages: return
-   self.seen_messages.add(key)
-   matched_text=text.split(":",1)[1].lstrip() if ":" in text else text
-   matched=matched_text.lower().startswith(trigger.lower())
-   record_bot_message(channel,text,matched)
-   self.store.record_bot_message(channel,text,matched)
-   if not matched: return
-   page=next((item for item in self.store.saved_lists() if item["name"]==page_name),None)
-   if not page: return
-   for message in page["messages"]:
-    for chunk in split_message(message):
-     result=await mc.commands.send_chan_msg(channel,chunk)
-     if getattr(result,"type",None)==EventType.ERROR: raise RuntimeError(result.payload)
+   try:
+    payload=getattr(event,"payload",None) or {}; text=str(payload.get("text", "")); incoming_channel=payload.get("channel_idx")
+    if incoming_channel!=channel: return
+    key=(payload.get("sender_timestamp"),text,incoming_channel)
+    if key in self.seen_messages: return
+    self.seen_messages.add(key)
+    matched_text=text.split(":",1)[1].lstrip() if ":" in text else text
+    matched=matched_text.lower().startswith(trigger.lower())
+    record_bot_message(channel,text,matched)
+    self.store.record_bot_message(channel,text,matched)
+    if matched: asyncio.create_task(post_page())
+   except Exception as exc:
+    set_bot_status(state="listening",channel=channel,error=f"message handling failed: {exc}")
   try:
    subscription=mc.subscribe(EventType.CHANNEL_MSG_RECV,on_message)
    await mc.start_auto_message_fetching()
