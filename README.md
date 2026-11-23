@@ -84,19 +84,21 @@ Replace `192.168.1.25` with the address shown on your computer. If a firewall is
 
 ## Update Towncrier
 
-For an existing Git-based installation, run the updater from the application checkout:
+After installing with `./install.sh`, open a terminal in the folder you cloned (not the copy under `/opt`). Run the updater as your usual user:
 
 ```bash
-sudo /opt/towncrier/update.sh
+./update.sh
 ```
 
-It refuses to overwrite local edits, fast-forwards the `main` branch from GitHub, installs or updates all Python dependencies in `/opt/towncrier/.venv`, verifies the Towncrier command, and restarts the `towncrier` service when it is installed. The database in `/var/lib/towncrier` is preserved.
+The updater may ask for your `sudo` password when it installs into the system virtual environment or restarts the service. It fetches `main` from `origin` and advances your checkout only if it can do so without merging or discarding local commits. If you have uncommitted changes, it stops and leaves them alone.
 
-To update without restarting immediately:
+It installs Towncrier and its Python dependencies into `/opt/towncrier/.venv`, the same environment the systemd service uses. It checks that the Towncrier command works, restarts `towncrier`, and checks that systemd reports it active. It does not change the unit file or the database in `/var/lib/towncrier`.
 
-```bash
-sudo /opt/towncrier/update.sh --no-restart
-```
+- If you used a custom install directory, pass the same prefix: `PREFIX=/srv/towncrier ./update.sh`.
+- To install now but leave the running process alone, use `./update.sh --no-restart`. When ready, run `sudo systemctl restart towncrier` followed by `systemctl is-active towncrier`.
+- For a standalone checkout without a system installation, use `./update.sh --venv .venv`. This creates or updates a local environment and does not restart any service by default.
+
+If the service fails to restart, check its logs with `sudo journalctl -u towncrier -n 50`. Run `./update.sh --help` to see all options.
 
 ## 4. Find the USB serial device
 

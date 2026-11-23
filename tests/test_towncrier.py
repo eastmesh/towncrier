@@ -145,6 +145,18 @@ class StoreTests(unittest.TestCase):
     def test_split_message_preserves_newlines(self):
         message = "first line\nsecond line\nthird"
         self.assertEqual("".join(split_message(message)), message)
+    def test_split_message_caps_utf8_bytes(self):
+        for message in ('😀'*130, 'é'*100+'\n'+'😀'*50):
+            chunks=split_message(message)
+            self.assertEqual(''.join(chunks),message)
+            self.assertTrue(all(len(chunk.encode('utf-8'))<=130 for chunk in chunks))
+    def test_failed_schedule_waits_before_retry(self):
+        self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
+        with self.s.connect() as db: db.execute("UPDATE schedules SET next_send=1")
+        with patch('towncrier.db.time.time',return_value=100):
+            self.s.failed(1,RuntimeError('radio unavailable'))
+        self.assertEqual(self.s.due(159),[])
+        self.assertEqual(len(self.s.due(160)),1)
     def test_sent_moves_next_send(self):
         self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
         row = self.s.schedules()[0]
@@ -153,6 +165,32 @@ class StoreTests(unittest.TestCase):
     def test_escape(self): self.assertEqual(esc('<script>'), '&lt;script&gt;')
 
 class BotListenerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_disconnect_exits_session_without_message_notification(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        events=SimpleNamespace(**{name: object() for name in (
+            "NO_MORE_MSGS", "ERROR", "MESSAGES_WAITING", "CHANNEL_MSG_RECV")})
+        listening=asyncio.Event()
+        mc=SimpleNamespace(is_connected=True, subscribe=lambda *_: None,
+                           disconnect=AsyncMock(), stop_auto_message_fetching=AsyncMock())
+        mc.commands=SimpleNamespace(get_msg=AsyncMock(return_value=SimpleNamespace(type=events.NO_MORE_MSGS)))
+        bot=BotListener(None,threading.Event())
+        def status(**fields):
+            if fields["state"]=="listening": listening.set()
+
+        with patch.dict(sys.modules,{"meshcore":SimpleNamespace(EventType=events)}), \
+             patch.object(bot,"_config",return_value=(True,5,"testing","Reply",0)), \
+             patch("towncrier.engine.Radio.from_store",return_value=SimpleNamespace(_connect=AsyncMock(return_value=mc))), \
+             patch("towncrier.engine.set_bot_status",side_effect=status):
+            session=asyncio.create_task(bot._run_async())
+            await asyncio.wait_for(listening.wait(),1)
+            mc.is_connected=False
+            with self.assertRaisesRegex(ConnectionError,"disconnected"):
+                await asyncio.wait_for(session,1.5)
+        mc.commands.get_msg.assert_awaited_once()
+        mc.disconnect.assert_awaited_once()
+
     async def test_reply_send_does_not_issue_a_competing_message_fetch(self):
         class Commands:
             def __init__(self): self.sent=[]; self.fetches=0
@@ -211,6 +249,7 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
                 return type("Result",(),{"type":EventType.NO_MORE_MSGS,"payload":{}})()
             async def send_chan_msg(self,channel,text): self.sent.append((channel,text)); return type("Result",(),{"type":None})()
         class MeshCore:
+            is_connected=True
             def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callbacks={}; self.fetches=0
             def subscribe(self,event,callback): self.callbacks[event]=callback; return object()
             def unsubscribe(self,_subscription): pass
@@ -248,6 +287,7 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
             async def send_chan_msg(self,channel,text):
                 self.sent.append((channel,text)); self.mc.stop.set(); return type("Result",(),{"type":None})()
         class MeshCore:
+            is_connected=True
             def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callbacks={}
             def subscribe(self,event,callback): self.callbacks[event]=callback; return object()
             def unsubscribe(self,_subscription): pass
@@ -595,14 +635,16 @@ class WebUiTests(unittest.TestCase):
         request=urllib.request.Request(f"http://127.0.0.1:{server.server_port}/save",data=urllib.parse.urlencode(fields).encode(),headers={"Content-Type":"application/x-www-form-urlencoded"})
         try:
             with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
-                with urllib.request.urlopen(request): pass
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(urllib.parse.urlsplit(response.geturl()).path,"/schedules")
                 created=store.get(1)
                 assert created is not None
                 original_next_send=created["next_send"]
                 saved_messages=created["messages"]
                 edit_fields=[("id","1"),("name","Edited"),("channel","0"),("post_time","10:00"),("post_time","15:00"),("message_delay","3"),("message","updated"),("enabled","on")]
                 edit_request=Request(f"http://127.0.0.1:{server.server_port}/save",data=urllib.parse.urlencode(edit_fields).encode(),headers={"Content-Type":"application/x-www-form-urlencoded"})
-                with urlopen(edit_request): pass
+                with urlopen(edit_request) as response:
+                    self.assertEqual(urllib.parse.urlsplit(response.geturl()).path,"/schedules")
             updated=store.get(1)
             assert updated is not None
         finally:

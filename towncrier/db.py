@@ -1,4 +1,5 @@
 import sqlite3, threading, time
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 MIN_INTERVAL=1800
 MAX_MESSAGE=500
@@ -11,10 +12,17 @@ class Store:
    except sqlite3.OperationalError: pass
    try: db.execute("ALTER TABLE schedules ADD COLUMN send_at TEXT NOT NULL DEFAULT ''")
    except sqlite3.OperationalError: pass
+   if not any(row[1]=="reply_status" for row in db.execute("PRAGMA table_info(bot_messages)")):
+    # Old trigger rows have no known outcome; don't infer that a reply was sent.
+    db.execute("ALTER TABLE bot_messages ADD COLUMN reply_status TEXT NOT NULL DEFAULT ''")
    db.execute("UPDATE schedules SET interval=? WHERE interval<?",(MIN_INTERVAL,MIN_INTERVAL))
    db.execute("INSERT INTO schedule_post_times(schedule_id,position,post_time) SELECT id,0,send_at FROM schedules WHERE send_at!='' AND NOT EXISTS (SELECT 1 FROM schedule_post_times WHERE schedule_id=schedules.id)")
+ @contextmanager
  def connect(self):
-  db=sqlite3.connect(self.path,timeout=10); db.row_factory=sqlite3.Row; db.execute("PRAGMA foreign_keys=ON"); return db
+  # SQLite's transaction context commits or rolls back, but does not close.
+  with closing(sqlite3.connect(self.path,timeout=10)) as db, db:
+   db.row_factory=sqlite3.Row; db.execute("PRAGMA foreign_keys=ON")
+   yield db
  def setting(self,key,default=""):
   with self.lock,self.connect() as db:
    row=db.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone(); return row[0] if row else default
@@ -25,14 +33,21 @@ class Store:
    return [{"name":row[0],"messages":[r[0] for r in db.execute("SELECT message FROM saved_list_messages WHERE list_name=? ORDER BY position",(row[0],))]} for row in db.execute("SELECT name FROM saved_lists ORDER BY name COLLATE NOCASE")]
  def record_bot_message(self,channel,text,triggered=False,error=""):
   with self.lock,self.connect() as db:
-   db.execute("INSERT INTO bot_messages(received_at,channel,text,triggered,error) VALUES(?,?,?,?,?)",(time.time(),int(channel),str(text),1 if triggered else 0,str(error)[:500]))
-   db.execute("DELETE FROM bot_messages WHERE id NOT IN (SELECT id FROM bot_messages ORDER BY received_at DESC LIMIT 500)")
+   row=db.execute("INSERT INTO bot_messages(received_at,channel,text,triggered,error,reply_status) VALUES(?,?,?,?,?,?)",(time.time(),int(channel),str(text),1 if triggered else 0,str(error)[:500],"pending" if triggered else ""))
+   db.execute("DELETE FROM bot_messages WHERE id NOT IN (SELECT id FROM bot_messages ORDER BY id DESC LIMIT 500)")
+   return row.lastrowid
+ def finish_bot_reply(self,message_id,status,error=""):
+  with self.lock,self.connect() as db:
+   db.execute("UPDATE bot_messages SET reply_status=?,error=? WHERE id=? AND reply_status='pending'",(status,str(error)[:500],message_id))
+ def interrupt_pending_bot_replies(self):
+  with self.lock,self.connect() as db:
+   db.execute("UPDATE bot_messages SET reply_status='interrupted',error=? WHERE reply_status='pending'",("Listener restarted before the reply finished; not retried.",))
  def bot_messages(self,channel=None,limit=100):
   with self.lock,self.connect() as db:
-   query="SELECT received_at,channel,text,triggered,error FROM bot_messages"; args=[]
+   query="SELECT received_at,channel,text,triggered,error,reply_status FROM bot_messages"; args=[]
    if channel is not None: query+=" WHERE channel=?"; args.append(int(channel))
-   query+=" ORDER BY received_at DESC LIMIT ?"; args.append(int(limit))
-   return [{"time":row[0],"channel":row[1],"text":row[2],"triggered":bool(row[3]),"error":row[4]} for row in db.execute(query,args)]
+   query+=" ORDER BY id DESC LIMIT ?"; args.append(int(limit))
+   return [{"time":row[0],"channel":row[1],"text":row[2],"triggered":bool(row[3]),"error":row[4],"reply_status":row[5]} for row in db.execute(query,args)]
  def save_list(self,name,messages):
   name=str(name).strip()[:80]; messages=[str(m).strip() for m in messages if str(m).strip()]
   if not name: raise ValueError("list name is required")
@@ -122,4 +137,5 @@ class Store:
    return self._schedule_next(ident,when,interval)
   with self.lock,self.connect() as db: db.execute("UPDATE schedules SET next_send=?,last_send=?,last_error=NULL,status=? WHERE id=?",(when+interval,when,"sent",int(ident)))
  def failed(self,ident,error):
-  with self.lock,self.connect() as db: db.execute("UPDATE schedules SET last_error=?,status=? WHERE id=?",(str(error)[:500],"error",int(ident)))
+  # Keep a failed radio from tying up every scheduler pass.
+  with self.lock,self.connect() as db: db.execute("UPDATE schedules SET last_error=?,status=?,next_send=MAX(next_send,?) WHERE id=?",(str(error)[:500],"error",time.time()+60,int(ident)))
