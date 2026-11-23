@@ -101,7 +101,7 @@ class BotListener(threading.Thread):
     if key in self.seen_messages: return
     self.seen_messages.add(key)
     matched_text=text.split(":",1)[1].lstrip() if ":" in text else text
-    matched=matched_text.lower().startswith(trigger.lower())
+    matched=matched_text.strip().casefold()==trigger.casefold()
     record_bot_message(channel,text,matched)
     self.store.record_bot_message(channel,text,matched)
     if matched: pending_replies.put_nowait(page_name)

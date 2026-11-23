@@ -171,6 +171,37 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
         sleep.assert_awaited_once_with(7)
         self.assertEqual(mc.commands.fetches,0)
 
+    async def test_trigger_with_extra_text_does_not_reply(self):
+        class Commands:
+            def __init__(self,mc): self.mc=mc; self.sent=[]
+            async def get_msg(self):
+                await self.mc.callback(type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":2,"text":"Node: testing please reply"}})())
+                self.mc.stop.set()
+            async def send_chan_msg(self,channel,text): self.sent.append((channel,text)); return type("Result",(),{"type":None})()
+        class MeshCore:
+            def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callback=None
+            def subscribe(self,_event,callback): self.callback=callback; return object()
+            def unsubscribe(self,_subscription): pass
+            async def stop_auto_message_fetching(self): pass
+            async def disconnect(self): pass
+        class Radio:
+            def __init__(self,mc): self.mc=mc
+            async def _connect(self): return self.mc
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/"bot-exact-trigger.db")
+            store.save_list("Reply",["reply"])
+            for key,value in (("bot_enabled","1"),("bot_channel","5"),("bot_trigger","testing"),("bot_page_name","Reply")):
+                store.set_setting(key,value)
+            class EventType:
+                CHANNEL_MSG_RECV=object()
+                ERROR=object()
+            stop=threading.Event(); mc=MeshCore(stop)
+            with patch.dict(sys.modules,{"meshcore":type("MeshcoreModule",(),{"EventType":EventType})()}), patch("towncrier.engine.Radio.from_store",return_value=Radio(mc)):
+                await BotListener(store,stop)._run_async()
+            history=store.bot_messages(5)
+        self.assertEqual(mc.commands.sent,[])
+        self.assertFalse(history[0]["triggered"])
+
     async def test_triggered_reply_is_sent_before_the_listener_fetches_again(self):
         class Commands:
             def __init__(self,mc): self.mc=mc; self.fetches=0; self.sent=[]
@@ -320,6 +351,20 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('SCHEDULE SETUP',page)
         self.assertIn('name="page_name"',page)
         self.assertIn('SCHEDULE SETUP',page)
+
+    def test_saved_schedule_load_link_stays_on_the_schedules_page(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"schedule-load-link.db"); Handler.store=store
+        ident=store.save({"name":"Morning","channels":[0],"messages":["hello"],"interval":3600})
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[{"index":0,"name":"General","configured":True}])):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertIn(f'href="/schedules?edit={ident}"',page)
 
     def test_schedule_with_extra_daily_times_has_removal_controls(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
