@@ -97,7 +97,8 @@ class Store:
    if ident:
     ident=int(ident); existing=self.get(ident)
     if not existing: raise ValueError("schedule not found")
-    db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,enabled=?,message_delay=? WHERE id=?",(name,channel,messages[0],interval,enabled,message_delay,ident))
+    # Only the dedicated Pause/Enable action changes an existing schedule’s state.
+    db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,message_delay=? WHERE id=?",(name,channel,messages[0],interval,message_delay,ident))
    else:
     db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay,send_at) VALUES(?,?,?,?,?,?,?,?,?)",(name,channel,messages[0],interval,enabled,self._next_send(send_at,interval,post_times),"waiting",message_delay,post_times[0] if post_times else send_at)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
    db.execute("DELETE FROM schedule_post_times WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_post_times(schedule_id,position,post_time) VALUES(?,?,?)",[(ident,i,value) for i,value in enumerate(post_times)])

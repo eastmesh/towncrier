@@ -40,20 +40,36 @@ class Handler(BaseHTTPRequestHandler):
  radio_snapshot_store_path=None
  radio_snapshot_cached_at=0.0
  radio_snapshot_ttl=15.0
+ radio_snapshot_job=None
+ radio_snapshot_generation=0
  def cached_radio_snapshot(self):
-  cls=type(self); now=time.monotonic(); store_path=self.store.path
+  cls=type(self); store=self.store; store_path=store.path
   with cls.radio_snapshot_lock:
-   cached=cls.radio_snapshot_cache
-   if cached is not None and cls.radio_snapshot_store_path==store_path and now-cls.radio_snapshot_cached_at<cls.radio_snapshot_ttl: return cached
-   try: snapshot=Radio.from_store(self.store).snapshot()
-   except Exception:
-    if cached is not None and cls.radio_snapshot_store_path==store_path: return cached
-    raise
-   cls.radio_snapshot_cache=snapshot; cls.radio_snapshot_store_path=store_path; cls.radio_snapshot_cached_at=now
-   return snapshot
+   cached=cls.radio_snapshot_cache if cls.radio_snapshot_store_path==store_path else None
+   if cached is not None and time.monotonic()-cls.radio_snapshot_cached_at<cls.radio_snapshot_ttl: return cached
+   if cls.radio_snapshot_job is None:
+    ready=threading.Event(); result=[]; generation=cls.radio_snapshot_generation
+    cls.radio_snapshot_job=(ready,result,store_path,generation)
+    def refresh():
+     try: outcome=Radio.from_store(store).snapshot()
+     except Exception as exc: outcome=exc
+     with cls.radio_snapshot_lock:
+      if generation==cls.radio_snapshot_generation and not isinstance(outcome,Exception):
+       cls.radio_snapshot_cache=outcome; cls.radio_snapshot_store_path=store_path; cls.radio_snapshot_cached_at=time.monotonic()
+      result.append(outcome); cls.radio_snapshot_job=None; ready.set()
+    threading.Thread(target=refresh,daemon=True,name="radio-snapshot").start()
+   ready,result,job_path,generation=cls.radio_snapshot_job
+  # Use the previous channel list immediately; a cold page only waits briefly.
+  if cached is not None: return cached
+  if job_path!=store_path or not ready.wait(.6): raise RuntimeError("Radio channel refresh in progress. Reload in a moment.")
+  with cls.radio_snapshot_lock:
+   if generation!=cls.radio_snapshot_generation: raise RuntimeError("Radio settings changed during refresh. Reload in a moment.")
+  if isinstance(result[0],Exception): raise result[0]
+  return result[0]
  @classmethod
  def invalidate_radio_snapshot(cls):
   with cls.radio_snapshot_lock:
+   cls.radio_snapshot_generation+=1
    cls.radio_snapshot_cache=None; cls.radio_snapshot_store_path=None; cls.radio_snapshot_cached_at=0.0
  def do_GET(self):
   path=urlparse(self.path).path
@@ -72,7 +88,7 @@ class Handler(BaseHTTPRequestHandler):
    except (TypeError,ValueError) as exc: return self.respond(json.dumps({"error":str(exc)}),"application/json",400)
   if path=="/publisher-api/channels":
    try:
-    _,channels=Radio.from_store(self.store).snapshot()
+    _,channels=self.cached_radio_snapshot()
     return self.respond(json.dumps({"channels":channels}),"application/json")
    except Exception as exc: return self.respond(json.dumps({"error":str(exc)}),"application/json",502)
   if path=="/publisher-api/bot-status": return self.respond(json.dumps(bot_listener_status()),"application/json")
@@ -236,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
   schedule_items+='</section>'
   send_time=e.get("post_times") or ([e["send_at"]] if e.get("send_at") else ["09:00"])
   post_time_fields=''.join('<div class="post-time-row"><label>Daily post time (local) <input form="schedule-form" required type="time" name="post_time" value="'+esc(value)+'"></label>'+('' if index==0 else '<button type="button" class="danger remove-post-time" data-action="remove-post-time">Remove</button>')+'</div>' for index,value in enumerate(send_time))
-  out+='<form id="schedule-form" method="post" action="/save"></form><div class="towncrier-workspace schedule-stack"><aside class="schedule-settings-rail"><section class="card panel schedule-setup-card"><p class="eyebrow">SCHEDULE SETUP</p><h2>'+('Edit' if e["id"] else 'Create a schedule')+'</h2><input type="hidden" form="schedule-form" name="id" value="'+esc(e["id"])+ '"><label>Name <input form="schedule-form" required name="name" value="'+esc(e["name"])+ '"></label><label>Channels <details class="channel-picker"><summary>Choose named channels</summary><div class="channel-picker-options">'+channel_picker+'</div></details></label><fieldset><legend>Daily post times</legend><div id="daily-post-times">'+post_time_fields+'</div><button type="button" id="add-daily-post-time">Add another time</button></fieldset><label>Delay between messages (seconds) <input form="schedule-form" required type="number" min="0" max="3600" name="message_delay" value="'+str(e["message_delay"])+ '"></label><small>Times use this computer’s local timezone. MeshPage Publisher posts once at each selected time every day. Editing retains the current pending post time.</small></section></aside><section class="card panel schedule-page-source"><p class="eyebrow">MESSAGE PAGE</p><h2>Choose a saved page</h2><p class="muted">Schedules publish the messages from a saved Composer page.</p><label>Saved page<select form="schedule-form" required name="page_name"><option value="">Choose a saved page…</option>'+''.join('<option value="'+esc(item["name"])+('" selected' if item["messages"]==e["messages"] else '"')+'>'+esc(item["name"])+" ("+str(len(item["messages"]))+" messages)</option>" for item in self.store.saved_lists())+'</select></label></section><aside class="schedule-settings-rail schedule-actions-rail"><section class="card panel schedule-actions-card"><p class="eyebrow">SAVE SCHEDULE</p><label class="enabled-field"><input form="schedule-form" type="checkbox" name="enabled" '+('checked' if e["enabled"] else '')+ '> Schedule active</label><button class="primary" type="submit" form="schedule-form">Save schedule</button><span id="save-status" class="muted" aria-live="polite"></span></section>'+schedule_items+'</aside></div>'
+  out+='<form id="schedule-form" method="post" action="/save"></form><div class="towncrier-workspace schedule-stack"><aside class="schedule-settings-rail"><section class="card panel schedule-setup-card"><p class="eyebrow">SCHEDULE SETUP</p><h2>'+('Edit' if e["id"] else 'Create a schedule')+'</h2><input type="hidden" form="schedule-form" name="id" value="'+esc(e["id"])+ '"><label>Name <input form="schedule-form" required name="name" value="'+esc(e["name"])+ '"></label><label>Channels <details class="channel-picker"><summary>Choose named channels</summary><div class="channel-picker-options">'+channel_picker+'</div></details></label><fieldset><legend>Daily post times</legend><div id="daily-post-times">'+post_time_fields+'</div><button type="button" id="add-daily-post-time">Add another time</button></fieldset><label>Delay between messages (seconds) <input form="schedule-form" required type="number" min="0" max="3600" name="message_delay" value="'+str(e["message_delay"])+ '"></label><small>Times use this computer’s local timezone. MeshPage Publisher posts once at each selected time every day. Editing retains the current pending post time.</small></section></aside><section class="card panel schedule-page-source"><p class="eyebrow">MESSAGE PAGE</p><h2>Choose a saved page</h2><p class="muted">Schedules publish the messages from a saved Composer page.</p><label>Saved page<select form="schedule-form" required name="page_name"><option value="">Choose a saved page…</option>'+''.join('<option value="'+esc(item["name"])+('" selected' if item["messages"]==e["messages"] else '"')+'>'+esc(item["name"])+" ("+str(len(item["messages"]))+" messages)</option>" for item in self.store.saved_lists())+'</select></label></section><aside class="schedule-settings-rail schedule-actions-rail"><section class="card panel schedule-actions-card"><p class="eyebrow">SAVE SCHEDULE</p>'+('<p class="muted">Saving keeps this schedule '+('active' if e["enabled"] else 'paused')+'.</p>' if e["id"] else '<label class="enabled-field"><input form="schedule-form" type="checkbox" name="enabled" '+('checked' if e["enabled"] else '')+ '> Schedule active</label>')+'<button class="primary" type="submit" form="schedule-form">Save schedule</button><span id="save-status" class="muted" aria-live="polite"></span></section>'+schedule_items+'</aside></div>'
   self.respond(out+'<script>const postTimes=document.getElementById("daily-post-times");function makePostTime(value=""){const row=document.createElement("div");row.className="post-time-row";row.innerHTML=`<label>Daily post time (local) <input form="schedule-form" required type="time" name="post_time" value="${value}"></label><button type="button" class="danger remove-post-time" data-action="remove-post-time">Remove</button>`;return row}function refreshPostTimeControls(){[...postTimes.children].forEach((row,index)=>{const remove=row.querySelector("[data-action=remove-post-time]");if(index===0)remove?.remove();else if(!remove)row.append(makePostTime().querySelector("button"))})}document.getElementById("add-daily-post-time").onclick=()=>{postTimes.append(makePostTime());refreshPostTimeControls()};postTimes.addEventListener("click",event=>{if(event.target.closest("[data-action=remove-post-time]")&&postTimes.children.length>1){event.target.closest(".post-time-row").remove();refreshPostTimeControls()}});refreshPostTimeControls()</script><script defer src="/theme.js"></script></main></body></html>')
  def bot_page(self):
   # Reuse the shared snapshot so refreshing this page does not reopen the radio.

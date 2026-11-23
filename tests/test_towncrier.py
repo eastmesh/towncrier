@@ -427,6 +427,28 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('name="page_name"',page)
         self.assertIn('SCHEDULE SETUP',page)
 
+    def test_schedule_navigation_does_not_wait_for_stalled_radio(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/"stalled.db")
+            release=threading.Event()
+            def snapshot():
+                release.wait(3)
+                return {},[]
+            handler=object.__new__(Handler)
+            handler.store=store
+            Handler.invalidate_radio_snapshot()
+            try:
+                with patch("towncrier.app.Radio.from_store",return_value=SimpleNamespace(snapshot=snapshot)):
+                    import time
+                    started=time.monotonic()
+                    with self.assertRaisesRegex(RuntimeError,"refresh"):
+                        handler.cached_radio_snapshot()
+                    self.assertLess(time.monotonic()-started,1.2)
+            finally:
+                release.set()
+                Handler.invalidate_radio_snapshot()
+
     def test_schedules_reuses_a_recent_radio_snapshot(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
         Handler.store=Store(Path(tmp.name)/"schedule-snapshot-cache.db")
@@ -641,12 +663,19 @@ class WebUiTests(unittest.TestCase):
                 assert created is not None
                 original_next_send=created["next_send"]
                 saved_messages=created["messages"]
-                edit_fields=[("id","1"),("name","Edited"),("channel","0"),("post_time","10:00"),("post_time","15:00"),("message_delay","3"),("message","updated"),("enabled","on")]
+                edit_fields=[("id","1"),("name","Edited"),("channel","0"),("post_time","10:00"),("post_time","15:00"),("message_delay","3"),("message","updated")]
                 edit_request=Request(f"http://127.0.0.1:{server.server_port}/save",data=urllib.parse.urlencode(edit_fields).encode(),headers={"Content-Type":"application/x-www-form-urlencoded"})
                 with urlopen(edit_request) as response:
                     self.assertEqual(urllib.parse.urlsplit(response.geturl()).path,"/schedules")
             updated=store.get(1)
             assert updated is not None
+            self.assertEqual(updated["enabled"],1)
+            store.toggle(1)
+            edit_fields.append(("enabled","on"))  # A stale form must not resume it.
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
+                with urlopen(Request(edit_request.full_url,data=urllib.parse.urlencode(edit_fields).encode())) as response:
+                    self.assertEqual(urllib.parse.urlsplit(response.geturl()).path,"/schedules")
+            self.assertEqual(store.get(1)["enabled"],0)
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
         self.assertEqual(saved_messages,["second","first"])
