@@ -56,6 +56,12 @@ git -C "$REPO_DIR" merge --ff-only "origin/$BRANCH"
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   "$PYTHON" -m venv "$VENV_DIR"
 fi
+BUILD_DIR_CREATED=0
+[[ -e "$REPO_DIR/build" ]] || BUILD_DIR_CREATED=1
+cleanup_build() {
+  if ((BUILD_DIR_CREATED)); then rm -rf -- "$REPO_DIR/build"; fi
+}
+trap cleanup_build EXIT
 "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
 "$VENV_DIR/bin/python" -m pip install --upgrade "$REPO_DIR"
 "$VENV_DIR/bin/towncrier" --help >/dev/null
