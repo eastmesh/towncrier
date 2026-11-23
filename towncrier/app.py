@@ -244,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
    else: return self.send_error(404)
    if path in {"/settings","/radio-settings","/channel-save","/channel-delete"}: self.invalidate_radio_snapshot()
    if path=="/save" and ajax: return self.page()
-   destination="/radio" if path in {"/settings","/radio-settings","/channel-save","/channel-delete"} else "/schedules" if path in {"/save","/send"} else "/"
+   destination="/radio" if path in {"/settings","/radio-settings","/channel-save","/channel-delete"} else "/schedules" if path in {"/save","/send","/toggle"} else "/"
    self.send_response(303); self.send_header("Location",destination); self.end_headers()
   except Exception as exc:
    if path=="/save" and ajax: return self.respond(str(exc),"text/plain",400)

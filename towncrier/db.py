@@ -55,7 +55,7 @@ class Store:
    query+=" ORDER BY id DESC LIMIT ?"; args.append(int(limit))
    return [{"time":row[0],"channel":row[1],"text":row[2],"triggered":bool(row[3]),"error":row[4],"reply_status":row[5]} for row in db.execute(query,args)]
  def save_list(self,name,messages):
-  name=str(name).strip()[:80]; messages=[str(m).strip() for m in messages if str(m).strip()]
+  name=str(name).strip()[:80]; messages=[str(m) for m in messages if str(m).strip()]
   if not name: raise ValueError("list name is required")
   if not messages: raise ValueError("list must contain at least one message")
   if any(len(m)>500 for m in messages): raise ValueError("messages must be 500 characters or fewer")

@@ -35,6 +35,8 @@ def _utf8_prefix(text, limit):
  return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 
 def split_message(message):
+ # A textbox that fits is already one radio message; preserve its formatting.
+ if len(message.encode("utf-8"))<=MAX_CHUNK: return [message] if message else []
  if "\n" not in message and "\r" not in message:
   words=message.split(); chunks=[]; current=""
   for word in words:

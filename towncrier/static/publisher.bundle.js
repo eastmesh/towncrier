@@ -1037,7 +1037,7 @@ function parseTemplate(htmlString) {
 }
 var parseCache = /* @__PURE__ */ new WeakMap();
 var domInstancesCache = /* @__PURE__ */ new WeakMap();
-var unkeyedSymbol = /* @__PURE__ */ Symbol("un-keyed");
+var unkeyedSymbol = Symbol("un-keyed");
 var hasReplaceChildren = "replaceChildren" in Element.prototype;
 function replaceChildren(parentNode, newChildren) {
   if (hasReplaceChildren) {
@@ -2155,6 +2155,9 @@ var TowncrierPublisher = class {
 };
 
 // towncrier/static/publisher.js
+var MAX_POST_BYTES2 = 130;
+var validateMessage2 = (text) => validateMessage(text, MAX_POST_BYTES2);
+var splitMessages2 = (values) => splitMessages(values, MAX_POST_BYTES2);
 var $ = (id) => document.getElementById(id);
 var messagesEl = $("messages");
 var publisher = null;
@@ -2184,7 +2187,7 @@ function renderPreview() {
     post.className = "phone-post received";
     const meta = document.createElement("div");
     meta.className = "phone-post-meta";
-    meta.textContent = `Room member \xB7 Message ${item.number} \xB7 ${item.bytes}/${MAX_POST_BYTES} bytes`;
+    meta.textContent = `Room member \xB7 Message ${item.number} \xB7 ${item.bytes}/${MAX_POST_BYTES2} bytes`;
     const bubble = document.createElement("div");
     bubble.className = "phone-bubble";
     bubble.textContent = item.text || "Empty message";
@@ -2206,7 +2209,7 @@ function updatePreviewScale() {
   $("phoneSizeNote").textContent = `Phone viewport \xB7 ${width} \xD7 ${height}`;
 }
 function renderMessages(values = [""]) {
-  values = values.flatMap((value) => validateMessage(value).valid ? [String(value)] : splitMessages([value]));
+  values = values.flatMap((value) => validateMessage2(value).valid ? [String(value)] : splitMessages2([value]));
   messagesEl.replaceChildren();
   const moveMessage = (from, to) => {
     if (from === to) return;
@@ -2291,9 +2294,9 @@ function renderMessages(values = [""]) {
     ta.value = value;
     ta.setAttribute("aria-label", `Message ${i + 1}`);
     function update() {
-      const info = validateMessage(ta.value);
+      const info = validateMessage2(ta.value);
       if (!info.valid) {
-        const chunks = splitMessages([ta.value]), next = [...messageValues()];
+        const chunks = splitMessages2([ta.value]), next = [...messageValues()];
         next.splice(i, 1, ...chunks);
         renderMessages(next);
         const continuation = messagesEl.querySelectorAll(".message textarea")[i + chunks.length - 1];
@@ -2303,7 +2306,7 @@ function renderMessages(values = [""]) {
       }
       clampMessage(ta);
       resizeMessage(ta);
-      count.textContent = `${info.bytes}/${MAX_POST_BYTES} bytes`;
+      count.textContent = `${info.bytes}/${MAX_POST_BYTES2} bytes`;
       count.classList.toggle("error", !info.valid);
       renderPreview();
     }
@@ -2560,14 +2563,14 @@ $("stopButton").onclick = () => {
 };
 $("sendButton").onclick = async () => {
   if (!publisher || !loggedIn) return;
-  const key = $("roomServerSelect").value || $("roomInput").value.trim(), texts = splitMessages(messageValues());
+  const key = $("roomServerSelect").value || $("roomInput").value.trim(), texts = messageValues().filter((text) => text.trim());
   if (!texts.length) {
     $("sendStatus").textContent = "Add at least one non-empty message.";
     return;
   }
-  const invalid = texts.findIndex((text) => !validateMessage(text).valid);
+  const invalid = texts.findIndex((text) => !validateMessage2(text).valid);
   if (invalid !== -1) {
-    $("sendStatus").textContent = `Message ${invalid + 1} exceeds ${MAX_POST_BYTES} UTF-8 bytes. Shorten it before publishing.`;
+    $("sendStatus").textContent = `Message ${invalid + 1} exceeds ${MAX_POST_BYTES2} UTF-8 bytes. Shorten it before publishing.`;
     messagesEl.querySelectorAll("textarea")[invalid]?.focus();
     return;
   }

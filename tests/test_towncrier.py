@@ -145,6 +145,11 @@ class StoreTests(unittest.TestCase):
     def test_split_message_preserves_newlines(self):
         message = "first line\nsecond line\nthird"
         self.assertEqual("".join(split_message(message)), message)
+    def test_saved_textbox_round_trips_as_one_unchanged_radio_message(self):
+        messages=["  one  two\tthree  ","\nfirst\n\nsecond\n", "😀"*32+"ab"]
+        self.s.save_list("Layout",messages)
+        self.assertEqual(self.s.saved_lists()[0]["messages"],messages)
+        self.assertEqual([split_message(text) for text in messages],[[text] for text in messages])
     def test_split_message_caps_utf8_bytes(self):
         for message in ('😀'*130, 'é'*100+'\n'+'😀'*50):
             chunks=split_message(message)
@@ -659,6 +664,26 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('name="page_name"',page)
         self.assertIn('Daily post times',page)
         self.assertIn('SAVED SCHEDULES',page)
+
+    def test_enable_and_pause_return_to_schedules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            class TestHandler(Handler):
+                store=Store(Path(tmp)/"toggle.db")
+
+            ident=TestHandler.store.save({"name":"Morning","channel":0,"message":"hello","interval":1800,"enabled":False})
+            with ThreadingHTTPServer(("127.0.0.1",0),TestHandler) as server:
+                thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+                base=f"http://127.0.0.1:{server.server_port}"
+                try:
+                    with patch("towncrier.app.Radio.snapshot",return_value=({},[])):
+                        for enabled in (1,0):
+                            with urlopen(Request(base+"/toggle",data=f"id={ident}".encode()),timeout=3) as response:
+                                self.assertEqual(response.geturl(),base+"/schedules")
+                            schedule=TestHandler.store.get(ident)
+                            assert schedule is not None
+                            self.assertEqual(schedule["enabled"],enabled)
+                finally:
+                    server.shutdown(); thread.join()
 
     def test_send_now_posts_saved_messages_and_returns_to_schedules(self):
         with tempfile.TemporaryDirectory() as tmp:
