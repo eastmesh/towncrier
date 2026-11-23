@@ -107,7 +107,11 @@ class BotListener(threading.Thread):
    await mc.start_auto_message_fetching()
    await mc.commands.get_msg()
    set_bot_status(state="listening",channel=channel,error="")
-   while not self.stop_event.is_set(): await asyncio.sleep(1)
+   while not self.stop_event.is_set():
+    await asyncio.sleep(1)
+    current=self._config()
+    if current!=(enabled,channel,trigger,page_name):
+     break
   finally:
    if subscription is not None:
     try: mc.unsubscribe(subscription)
