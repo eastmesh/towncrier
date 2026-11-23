@@ -85,7 +85,11 @@ class BotListener(threading.Thread):
     for message in page["messages"]:
      for chunk in split_message(message):
       result=await mc.commands.send_chan_msg(channel,chunk)
-      if getattr(result,"type",None)==EventType.ERROR: raise RuntimeError(result.payload)
+      result_type=getattr(result,"type",None)
+      if result_type==EventType.ERROR: raise RuntimeError(result.payload)
+      if str(result_type).lower() in {"no_event_received","no_more_msgs"}:
+       set_bot_status(state="listening",channel=channel,error="send confirmation unavailable; listener remains active")
+      await mc.commands.get_msg()
    except Exception as exc:
     set_bot_status(state="listening",channel=channel,error=f"post failed: {exc}")
   async def on_message(event):
