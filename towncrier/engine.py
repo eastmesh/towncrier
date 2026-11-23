@@ -113,6 +113,10 @@ class BotListener(threading.Thread):
    set_bot_status(state="listening",channel=channel,error="")
    while not self.stop_event.is_set():
     await asyncio.sleep(1)
+    fetch_task=getattr(mc,"_auto_fetch_task",None)
+    if fetch_task is not None and fetch_task.done():
+     try: await mc.commands.get_msg()
+     except Exception as exc: set_bot_status(state="listening",channel=channel,error=f"message fetch retry failed: {exc}")
     current=self._config()
     if current!=(enabled,channel,trigger,page_name):
      break
