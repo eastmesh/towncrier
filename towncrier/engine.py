@@ -21,7 +21,7 @@ def record_bot_message(channel,text,triggered=False,error=""):
   _bot_messages.append({"time":time.time(),"channel":channel,"text":text,"triggered":triggered,"error":error})
  set_bot_status(last_message={"time":time.time(),"channel":channel,"text":text})
 
-_bot_status={"state":"idle","channel":None,"last_message":None,"error":""}
+_bot_status={"state":"idle","channels":[],"last_message":None,"error":""}
 _bot_status_lock=threading.Lock()
 
 def bot_listener_status():
@@ -77,13 +77,10 @@ class BotListener(threading.Thread):
  daemon=True
  def __init__(self,store,stop_event):
   super().__init__(); self.store,self.stop_event=store,stop_event; self.seen_messages=set(); self.initial_drained=False; self.owner=getattr(store,"radio_owner",None)
- def _config(self):
-  enabled=self.store.setting("bot_enabled","0")=="1"; trigger=self.store.setting("bot_trigger","").strip(); page_name=self.store.setting("bot_page_name","").strip()
-  try: channel=int(self.store.setting("bot_channel","-1"))
-  except ValueError: channel=-1
-  try: message_delay=int(self.store.setting("bot_message_delay","3"))
-  except ValueError: message_delay=3
-  return enabled,channel,trigger,page_name,max(0,min(message_delay,3600))
+ def _load_entries(self):
+  return self.store.active_bot_entries()
+ def _snapshot(self,entries):
+  return tuple(sorted((e["id"],e["channel"],e["trigger"],e["page_name"],e["message_delay"]) for e in entries))
  async def _command(self, mc, command_lock, name, *args):
   if self.owner is not None:
    return await self.owner.run_bot_command(mc,name,*args)
@@ -136,11 +133,12 @@ class BotListener(threading.Thread):
    await asyncio.sleep(.25)
  async def _run_async(self):
   from meshcore import EventType
-  enabled,channel,trigger,page_name,message_delay=self._config()
-  if not enabled or channel<0 or not trigger or not page_name:
-   set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
+  entries=self._load_entries()
+  if not entries:
+   set_bot_status(state="disabled",channels=[],error="No active bot entries configured")
    return
-  config=(enabled,channel,trigger,page_name,message_delay)
+  channels={e["channel"] for e in entries}
+  config=self._snapshot(entries)
   if self.owner is not None:
    async with self.owner.connection() as mc:
     await mc.stop_auto_message_fetching()
@@ -154,23 +152,24 @@ class BotListener(threading.Thread):
    if not accept_messages: return
    try:
     payload=getattr(event,"payload",None) or {}; text=str(payload.get("text", "")); incoming_channel=payload.get("channel_idx")
-    if incoming_channel!=channel: return
+    if incoming_channel not in channels: return
     key=(payload.get("sender_timestamp"),text,incoming_channel)
     if key in self.seen_messages: return
     matched_text=text.split(":",1)[1].lstrip() if ":" in text else text
-    matched=matched_text.strip().casefold()==trigger.casefold()
-    message_id=self.store.record_bot_message(channel,text,matched)
+    matched_text=matched_text.strip().casefold()
+    entry=next((e for e in entries if e["channel"]==incoming_channel and matched_text==e["trigger"].casefold()),None)
+    message_id=self.store.record_bot_message(incoming_channel,text,entry is not None,entry_id=entry["id"] if entry else None)
     self.seen_messages.add(key)
-    record_bot_message(channel,text,matched)
-    if matched: pending_replies.put_nowait(message_id)
+    record_bot_message(incoming_channel,text,entry is not None)
+    if entry: pending_replies.put_nowait((message_id,entry))
    except Exception as exc:
-    set_bot_status(state="listening",channel=channel,error=f"message handling failed: {exc}")
+    set_bot_status(state="listening",channels=sorted(channels),error=f"message handling failed: {exc}")
   def on_messages_waiting(_event): fetch_requested.set()
   async def post_replies():
    while True:
-    message_id=await pending_replies.get()
+    message_id,entry=await pending_replies.get()
     try:
-     status,error=await self._post_page(mc,EventType,channel,page_name,message_delay,command_lock)
+     status,error=await self._post_page(mc,EventType,entry["channel"],entry["page_name"],entry["message_delay"],command_lock)
     except asyncio.CancelledError:
      self.store.finish_bot_reply(message_id,"interrupted","Listener stopped before the reply finished; not retried.")
      raise
@@ -182,7 +181,7 @@ class BotListener(threading.Thread):
   async def fetch_messages():
    nonlocal accept_messages
    if not accept_messages:
-    set_bot_status(state="draining",channel=channel,error="Clearing queued radio messages")
+    set_bot_status(state="draining",channels=sorted(channels),error="Clearing queued radio messages")
     await self._fetch_queued_messages(mc,EventType,command_lock)
     dispatcher_queue=getattr(getattr(mc,"dispatcher",None),"queue",None)
     if dispatcher_queue is not None: await dispatcher_queue.join()
@@ -190,7 +189,7 @@ class BotListener(threading.Thread):
    else:
     # Recover queued traffic after reconnect, even if its notification was lost.
     fetch_requested.set()
-   set_bot_status(state="listening",channel=channel,error="")
+   set_bot_status(state="listening",channels=sorted(channels),error="")
    while not self.stop_event.is_set():
     await fetch_requested.wait()
     fetch_requested.clear()
@@ -203,7 +202,7 @@ class BotListener(threading.Thread):
    # radio commands, not the delay between reply messages.
    tasks=[asyncio.create_task(fetch_messages()),asyncio.create_task(post_replies())]
    while not self.stop_event.is_set():
-    if self._config()!=config: break
+    if self._snapshot(self._load_entries())!=config: break
     if not mc.is_connected or (self.owner is not None and mc is not self.owner.device): raise ConnectionError("radio disconnected")
     done,_=await asyncio.wait(tasks,timeout=.25,return_when=asyncio.FIRST_COMPLETED)
     if done:
@@ -222,22 +221,23 @@ class BotListener(threading.Thread):
     for task in tasks: task.cancel()
     await asyncio.gather(*tasks,return_exceptions=True)
     while not pending_replies.empty():
-     self.store.finish_bot_reply(pending_replies.get_nowait(),"interrupted","Listener stopped before the reply started; not retried.")
+     message_id,_entry=pending_replies.get_nowait()
+     self.store.finish_bot_reply(message_id,"interrupted","Listener stopped before the reply started; not retried.")
    finally:
     if self.owner is None: await mc.disconnect()
  def run(self):
   self.store.interrupt_pending_bot_replies()
   while not self.stop_event.is_set():
-   enabled,channel,trigger,page_name,message_delay=self._config()
-   if not enabled or channel<0 or not trigger or not page_name:
+   entries=self._load_entries()
+   if not entries:
     self.initial_drained=False
-    set_bot_status(state="disabled",channel=channel,error="Bot settings are incomplete or disabled")
+    set_bot_status(state="disabled",channels=[],error="No active bot entries configured")
     self.stop_event.wait(5); continue
    try:
     if self.owner is not None: self.owner.run(self._run_async)
     else: asyncio.run(self._run_async())
    except Exception as exc:
-    set_bot_status(state="reconnecting",channel=channel,error=f"radio connection lost; retrying: {exc}"); self.stop_event.wait(2)
+    set_bot_status(state="reconnecting",channels=sorted({e["channel"] for e in entries}),error=f"radio connection lost; retrying: {exc}"); self.stop_event.wait(2)
 class Scheduler(threading.Thread):
  daemon=True
  def __init__(self,store,stop_event): super().__init__(); self.store,self.stop_event=store,stop_event

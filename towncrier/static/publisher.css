@@ -61,4 +61,8 @@ legend{padding:0 7px;color:var(--em-fg-muted);font-size:12px;font-weight:700;let
   .towncrier-scheduler{padding:0;margin:12px auto}
   .towncrier-scheduler .card{padding:16px}
   .towncrier-scheduler .grid{grid-template-columns:minmax(0,1fr)}
+  .towncrier-scheduler .saved-schedule{padding:24px 0;gap:12px}
+  .towncrier-scheduler .saved-schedule-heading{align-items:flex-start;flex-direction:column;gap:6px;font-size:1.18rem}
+  .towncrier-scheduler .saved-schedule-actions{display:grid;grid-template-columns:1fr;gap:10px}
+  .towncrier-scheduler .saved-schedule-actions form,.towncrier-scheduler .saved-schedule-actions a,.towncrier-scheduler .saved-schedule-actions button{width:100%;min-height:46px}
 }

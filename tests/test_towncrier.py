@@ -169,6 +169,78 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.s.get(row["id"])["next_send"], 1900)
     def test_escape(self): self.assertEqual(esc('<script>'), '&lt;script&gt;')
 
+class BotEntryTests(unittest.TestCase):
+    def test_legacy_bot_settings_migrate_into_one_persisted_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy-bot.db"
+            db = sqlite3.connect(path)
+            try:
+                with db:
+                    db.execute("CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                    for key, value in {"bot_enabled": "1", "bot_channel": "5", "bot_trigger": "ping",
+                                        "bot_page_name": "Reply", "bot_message_delay": "7"}.items():
+                        db.execute("INSERT INTO settings VALUES (?,?)", (key, value))
+            finally:
+                db.close()
+            store = Store(path)
+            entries = store.real_bot_entries()
+            self.assertEqual(len(entries), 1)
+            entry = entries[0]
+            self.assertEqual(entry["channel"], 5)
+            self.assertEqual(entry["trigger"], "ping")
+            self.assertEqual(entry["page_name"], "Reply")
+            self.assertEqual(entry["message_delay"], 7)
+            self.assertEqual(entry["enabled"], 1)
+            # Reopening the already-migrated database must not duplicate the entry.
+            self.assertEqual(len(Store(path).real_bot_entries()), 1)
+
+    def test_two_active_entries_on_distinct_channels_and_triggers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "bot-entries.db")
+            store.save_list("Reply", ["one"])
+            store.save_list("Other", ["two"])
+            first = store.save_bot_entry({"channel": 5, "trigger": "ping", "page_name": "Reply", "message_delay": 3})
+            second = store.save_bot_entry({"channel": 7, "trigger": "status", "page_name": "Other", "message_delay": 0})
+            active = store.active_bot_entries()
+            self.assertEqual({(e["id"], e["channel"], e["trigger"], e["page_name"]) for e in active},
+                              {(first, 5, "ping", "Reply"), (second, 7, "status", "Other")})
+
+    def test_pause_resume_and_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "bot-entries.db")
+            store.save_list("Reply", ["one"])
+            ident = store.save_bot_entry({"channel": 5, "trigger": "ping", "page_name": "Reply"})
+            store.toggle_bot_entry(ident)
+            self.assertEqual(store.get_bot_entry(ident)["enabled"], 0)
+            self.assertEqual(store.active_bot_entries(), [])
+            store.toggle_bot_entry(ident)
+            self.assertEqual(store.get_bot_entry(ident)["enabled"], 1)
+            store.delete_bot_entry(ident)
+            self.assertIsNone(store.get_bot_entry(ident))
+
+    def test_editing_a_paused_entry_does_not_resume_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "bot-entries.db")
+            store.save_list("Reply", ["one"])
+            ident = store.save_bot_entry({"channel": 5, "trigger": "ping", "page_name": "Reply", "enabled": False})
+            store.save_bot_entry({"channel": 5, "trigger": "ping-renamed", "page_name": "Reply"}, ident)
+            entry = store.get_bot_entry(ident)
+            self.assertEqual(entry["trigger"], "ping-renamed")
+            self.assertEqual(entry["enabled"], 0)
+
+    def test_collision_validation_rejects_same_active_channel_and_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "bot-entries.db")
+            store.save_list("Reply", ["one"])
+            store.save_list("Other", ["two"])
+            store.save_bot_entry({"channel": 5, "trigger": "ping", "page_name": "Reply"})
+            with self.assertRaises(ValueError):
+                store.save_bot_entry({"channel": 5, "trigger": "PING", "page_name": "Other"})
+            paused = store.save_bot_entry({"channel": 5, "trigger": "ping", "page_name": "Other", "enabled": False})
+            with self.assertRaises(ValueError):
+                store.toggle_bot_entry(paused)
+            self.assertEqual(store.get_bot_entry(paused)["enabled"], 0)
+
 class BotListenerTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_disconnect_exits_session_without_message_notification(self):
         import asyncio
@@ -185,7 +257,7 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
             if fields["state"]=="listening": listening.set()
 
         with patch.dict(sys.modules,{"meshcore":SimpleNamespace(EventType=events)}), \
-             patch.object(bot,"_config",return_value=(True,5,"testing","Reply",0)), \
+             patch.object(bot,"_load_entries",return_value=[{"id":1,"channel":5,"trigger":"testing","page_name":"Reply","message_delay":0}]), \
              patch("towncrier.engine.Radio.from_store",return_value=SimpleNamespace(_connect=AsyncMock(return_value=mc))), \
              patch("towncrier.engine.set_bot_status",side_effect=status):
             session=asyncio.create_task(bot._run_async())
@@ -313,6 +385,58 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
                 await BotListener(store,stop)._run_async()
         self.assertEqual(mc.commands.fetches,2)
         self.assertEqual(mc.commands.sent,[(5,"reply")])
+
+    async def test_multiple_active_entries_route_to_their_own_page_and_paused_entry_is_silent(self):
+        class Commands:
+            def __init__(self,mc): self.mc=mc; self.fetches=0; self.sent=[]
+            async def get_msg(self):
+                self.fetches+=1
+                if self.fetches==1:
+                    self.mc.callbacks[EventType.MESSAGES_WAITING](object())
+                elif self.fetches==2:
+                    self.mc.callbacks[EventType.CHANNEL_MSG_RECV](type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":1,"text":"Node: alpha"}})())
+                    self.mc.callbacks[EventType.MESSAGES_WAITING](object())
+                elif self.fetches==3:
+                    self.mc.callbacks[EventType.CHANNEL_MSG_RECV](type("Event",(),{"payload":{"channel_idx":5,"sender_timestamp":2,"text":"Node: beta"}})())
+                    self.mc.callbacks[EventType.MESSAGES_WAITING](object())
+                elif self.fetches==4:
+                    self.mc.callbacks[EventType.CHANNEL_MSG_RECV](type("Event",(),{"payload":{"channel_idx":7,"sender_timestamp":3,"text":"Node: gamma"}})())
+                return type("Result",(),{"type":EventType.NO_MORE_MSGS,"payload":{}})()
+            async def send_chan_msg(self,channel,text):
+                self.sent.append((channel,text))
+                if len(self.sent)>=2: self.mc.stop.set()
+                return type("Result",(),{"type":None})()
+        class MeshCore:
+            is_connected=True
+            def __init__(self,stop): self.stop=stop; self.commands=Commands(self); self.callbacks={}
+            def subscribe(self,event,callback): self.callbacks[event]=callback; return object()
+            def unsubscribe(self,_subscription): pass
+            async def stop_auto_message_fetching(self): pass
+            async def disconnect(self): pass
+        class Radio:
+            def __init__(self,mc): self.mc=mc
+            async def _connect(self): return self.mc
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/"bot-multi.db")
+            store.save_list("Alpha",["alpha-reply"])
+            store.save_list("Beta",["beta-reply"])
+            store.save_list("Gamma",["gamma-reply"])
+            store.save_bot_entry({"channel":5,"trigger":"alpha","page_name":"Alpha","message_delay":0})
+            store.save_bot_entry({"channel":5,"trigger":"beta","page_name":"Beta","message_delay":0,"enabled":False})
+            store.save_bot_entry({"channel":7,"trigger":"gamma","page_name":"Gamma","message_delay":0})
+            class EventType:
+                CHANNEL_MSG_RECV=object(); MESSAGES_WAITING=object(); NO_MORE_MSGS=object(); ERROR=object()
+            stop=threading.Event(); mc=MeshCore(stop)
+            with patch.dict(sys.modules,{"meshcore":type("MeshcoreModule",(),{"EventType":EventType})()}), patch("towncrier.engine.Radio.from_store",return_value=Radio(mc)):
+                await BotListener(store,stop)._run_async()
+            history={row["text"]:row for row in store.bot_messages()}
+        self.assertEqual(sorted(mc.commands.sent),[(5,"alpha-reply"),(7,"gamma-reply")])
+        self.assertTrue(history["Node: alpha"]["triggered"])
+        self.assertEqual(history["Node: alpha"]["reply_status"],"unconfirmed")
+        self.assertFalse(history["Node: beta"]["triggered"])
+        self.assertEqual(history["Node: beta"]["reply_status"],"")
+        self.assertTrue(history["Node: gamma"]["triggered"])
+        self.assertEqual(history["Node: gamma"]["reply_status"],"unconfirmed")
 
 class WebUiTests(unittest.TestCase):
     def test_publisher_page_contains_composer_and_page_controls(self):
@@ -775,6 +899,71 @@ class WebUiTests(unittest.TestCase):
             self.assertEqual(store.setting("connection_type"),"serial")
             self.assertEqual(store.setting("port"),"/dev/ttyACM1")
             self.assertEqual(store.setting("baud"),"57600")
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+
+    def test_bot_table_shows_named_channel_trigger_page_and_state_controls(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"bot-table.db"); Handler.store=store
+        store.save_list("Reply",["pong"])
+        active_id=store.save_bot_entry({"channel":5,"trigger":"ping","page_name":"Reply"})
+        paused_id=store.save_bot_entry({"channel":9,"trigger":"status","page_name":"Reply","enabled":False})
+        channels=[{"index":5,"name":"Ops","configured":True},{"index":9,"name":"Field","configured":True}]
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},channels)):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/bot") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertIn('id="bot-entries-table"',page)
+        self.assertIn("5 · Ops",page)
+        self.assertIn("9 · Field",page)
+        self.assertIn(">ping<",page)
+        self.assertIn(">status<",page)
+        self.assertIn(">Active<",page)
+        self.assertIn(">Paused<",page)
+        self.assertIn(">Pause<",page)
+        self.assertIn(">Resume<",page)
+        self.assertIn('href="/bot?edit='+str(active_id)+'"',page)
+        self.assertIn('href="/bot?edit='+str(paused_id)+'"',page)
+        self.assertIn('action="/bot-entries/toggle"',page)
+        self.assertIn('action="/bot-entries/delete"',page)
+
+    def test_bot_entries_create_toggle_and_delete_endpoints(self):
+        import urllib.parse
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"bot-crud.db"); Handler.store=store
+        store.save_list("Reply",["pong"])
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            base=f"http://127.0.0.1:{server.server_port}"
+            create=urllib.parse.urlencode({"channel":"5","trigger":"ping","page_name":"Reply","message_delay":"3","enabled":"on"}).encode()
+            request=Request(base+"/bot-entries",data=create,headers={"Content-Type":"application/x-www-form-urlencoded"})
+            with urlopen(request) as response:
+                self.assertTrue(response.geturl().endswith("/bot"))
+            entries=store.real_bot_entries()
+            self.assertEqual(len(entries),1)
+            ident=entries[0]["id"]
+            self.assertEqual(entries[0]["enabled"],1)
+
+            collide=urllib.parse.urlencode({"channel":"5","trigger":"PING","page_name":"Reply","enabled":"on"}).encode()
+            with urlopen(Request(base+"/bot-entries",data=collide,headers={"Content-Type":"application/x-www-form-urlencoded"})) as response:
+                collide_page=response.read().decode()
+            self.assertIn("already listens",collide_page)
+            self.assertEqual(len(store.real_bot_entries()),1)
+
+            toggle=urllib.parse.urlencode({"id":str(ident)}).encode()
+            with urlopen(Request(base+"/bot-entries/toggle",data=toggle,headers={"Content-Type":"application/x-www-form-urlencoded"})) as response:
+                self.assertTrue(response.geturl().endswith("/bot"))
+            self.assertEqual(store.get_bot_entry(ident)["enabled"],0)
+
+            delete=urllib.parse.urlencode({"id":str(ident)}).encode()
+            with urlopen(Request(base+"/bot-entries/delete",data=delete,headers={"Content-Type":"application/x-www-form-urlencoded"})) as response:
+                self.assertTrue(response.geturl().endswith("/bot"))
+            self.assertIsNone(store.get_bot_entry(ident))
         finally:
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
 
