@@ -247,6 +247,7 @@ class Scheduler(threading.Thread):
    for row in rows:
     if self.stop_event.is_set(): break
     try:
-     send_message(Radio.from_store(self.store),row["channels"],row["messages"],row["message_delay"],self.stop_event); self.store.sent(row["id"],time.time(),row["interval"])
+     messages=self.store.resolve_messages(row)
+     send_message(Radio.from_store(self.store),row["channels"],messages,row["message_delay"],self.stop_event); self.store.sent(row["id"],row["next_send"],row["interval"])
     except Exception as exc: self.store.failed(row["id"],exc)
    self.stop_event.wait(1 if rows else 10)

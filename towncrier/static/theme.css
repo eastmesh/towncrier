@@ -10,3 +10,5 @@
 .theme-toggle{margin-left:auto;white-space:nowrap;background:var(--em-panel);color:var(--em-fg);border-color:var(--em-border);font-size:14px;padding:8px 13px}
 .theme-toggle:hover{background:var(--em-panel-soft)}
 @media(max-width:700px){.theme-toggle{margin-left:0}}
+.save-success{background:#ffd700!important;border-color:#c9a300!important;color:#1a1500!important;transition:background .15s,color .15s}
+.save-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;background:#1a1500;color:#ffd700;padding:.6em 1.4em;border-radius:8px;font-weight:600;box-shadow:0 4px 18px rgba(0,0,0,.35);pointer-events:none}

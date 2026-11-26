@@ -3,6 +3,7 @@ from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 MIN_INTERVAL=1800
 MAX_MESSAGE=500
+CLAIM_TIMEOUT=600
 class Store:
  def __init__(self,path):
   self.path=str(path); self.lock=threading.RLock()
@@ -16,6 +17,10 @@ class Store:
    except sqlite3.OperationalError: pass
    try: db.execute("ALTER TABLE schedules ADD COLUMN send_count INTEGER NOT NULL DEFAULT 0")
    except sqlite3.OperationalError: pass
+   try: db.execute("ALTER TABLE schedules ADD COLUMN page_name TEXT")
+   except sqlite3.OperationalError: pass
+   try: db.execute("ALTER TABLE schedules ADD COLUMN claimed_at REAL")
+   except sqlite3.OperationalError: pass
    if not any(row[1]=="reply_status" for row in db.execute("PRAGMA table_info(bot_messages)")):
     # Old trigger rows have no known outcome; don't infer that a reply was sent.
     db.execute("ALTER TABLE bot_messages ADD COLUMN reply_status TEXT NOT NULL DEFAULT ''")
@@ -23,6 +28,17 @@ class Store:
     db.execute("ALTER TABLE bot_messages ADD COLUMN entry_id INTEGER")
    db.execute("UPDATE schedules SET interval=? WHERE interval<?",(MIN_INTERVAL,MIN_INTERVAL))
    db.execute("INSERT INTO schedule_post_times(schedule_id,position,post_time) SELECT id,0,send_at FROM schedules WHERE send_at!='' AND NOT EXISTS (SELECT 1 FROM schedule_post_times WHERE schedule_id=schedules.id)")
+   # One-time migration: link a schedule to its saved page only when its stored
+   # messages match exactly one saved page. Ambiguous or unmatched schedules stay
+   # unlinked (page_name NULL) rather than guessing.
+   if db.execute("SELECT 1 FROM settings WHERE key='schedule_page_name_backfilled'").fetchone() is None:
+    pages=[{"name":r[0],"messages":[m[0] for m in db.execute("SELECT message FROM saved_list_messages WHERE list_name=? ORDER BY position",(r[0],))]} for r in db.execute("SELECT name FROM saved_lists")]
+    for row in db.execute("SELECT id FROM schedules WHERE page_name IS NULL"):
+     ident=row[0]
+     messages=[m[0] for m in db.execute("SELECT message FROM schedule_messages WHERE schedule_id=? ORDER BY position",(ident,))]
+     matches=[p["name"] for p in pages if p["messages"]==messages]
+     if len(matches)==1: db.execute("UPDATE schedules SET page_name=? WHERE id=?",(matches[0],ident))
+    db.execute("INSERT INTO settings(key,value) VALUES('schedule_page_name_backfilled','1') ON CONFLICT(key) DO NOTHING")
    # One-time migration: fold the old single bot_* settings into a bot_entries row.
    if db.execute("SELECT 1 FROM settings WHERE key='bot_entries_migrated'").fetchone() is None:
     legacy=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('bot_channel','bot_trigger','bot_page_name','bot_message_delay','bot_enabled')"))
@@ -167,6 +183,8 @@ class Store:
  def save(self,data,ident=None):
   name=str(data["name"]).strip()[:80]; channel=int(data.get("channel",0)); interval=int(data.get("interval",MIN_INTERVAL)); message_delay=int(data.get("message_delay",3)); send_limit=max(0,int(data.get("send_limit",0)))
   channels=data.get("channels",data.get("channel",[])); channels=[int(c) for c in ([channels] if isinstance(channels,(str,int)) else channels)]
+  page_name=str(data.get("page_name","")).strip() or None
+  if page_name and not any(item["name"]==page_name for item in self.saved_lists()): raise ValueError(f"saved page '{page_name}' does not exist")
   messages=data.get("messages",data.get("message",[])); messages=[str(m) for m in ([messages] if isinstance(messages,str) else messages) if str(m).strip()]
   send_at=str(data.get("send_at", ""))
   post_times=[str(value) for value in (data.get("post_times") if "post_times" in data else ([send_at] if send_at else []))]
@@ -184,9 +202,9 @@ class Store:
     ident=int(ident); existing=self.get(ident)
     if not existing: raise ValueError("schedule not found")
     # Only the dedicated Pause/Enable action changes an existing schedule’s state.
-    db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,message_delay=?,send_limit=? WHERE id=?",(name,channel,messages[0],interval,message_delay,send_limit,ident))
+    db.execute("UPDATE schedules SET name=?,channel=?,message=?,interval=?,message_delay=?,send_limit=?,page_name=? WHERE id=?",(name,channel,messages[0],interval,message_delay,send_limit,page_name,ident))
    else:
-    db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay,send_at,send_limit,send_count) VALUES(?,?,?,?,?,?,?,?,?,?,0)",(name,channel,messages[0],interval,enabled,self._next_send(send_at,interval,post_times),"waiting",message_delay,post_times[0] if post_times else send_at,send_limit)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute("INSERT INTO schedules(name,channel,message,interval,enabled,next_send,status,message_delay,send_at,send_limit,send_count,page_name) VALUES(?,?,?,?,?,?,?,?,?,?,0,?)",(name,channel,messages[0],interval,enabled,self._next_send(send_at,interval,post_times),"waiting",message_delay,post_times[0] if post_times else send_at,send_limit,page_name)); ident=db.execute("SELECT last_insert_rowid()").fetchone()[0]
    db.execute("DELETE FROM schedule_post_times WHERE schedule_id=?",(ident,)); db.executemany("INSERT INTO schedule_post_times(schedule_id,position,post_time) VALUES(?,?,?)",[(ident,i,value) for i,value in enumerate(post_times)])
    if existing is None:
     db.execute("UPDATE schedules SET send_at=? WHERE id=?",(post_times[0] if post_times else send_at,ident))
@@ -206,23 +224,44 @@ class Store:
   with self.lock,self.connect() as db:
    times=self._post_times(db,ident)
    next_send=self._next_send("",interval,times,datetime.fromtimestamp(when).astimezone())
-   db.execute("UPDATE schedules SET next_send=?,last_send=?,last_error=NULL,status=?,send_count=send_count+1,enabled=CASE WHEN send_limit>0 AND send_count+1>=send_limit THEN 0 ELSE enabled END WHERE id=?",(next_send,when,"sent",int(ident)))
+   db.execute("UPDATE schedules SET next_send=?,last_send=?,last_error=NULL,status=?,send_count=send_count+1,enabled=CASE WHEN send_limit>0 AND send_count+1>=send_limit THEN 0 ELSE enabled END,claimed_at=NULL WHERE id=?",(next_send,when,"sent",int(ident)))
 
  def delete(self,ident):
   with self.lock,self.connect() as db: db.execute("DELETE FROM schedules WHERE id=?",(int(ident),))
  def toggle(self,ident):
   with self.lock,self.connect() as db: db.execute("UPDATE schedules SET enabled=1-enabled WHERE id=?",(int(ident),))
  def due(self,now=None):
+  # Claim each due row before returning it: another Store/process sharing this
+  # DB must not also pick it up. The UPDATE's WHERE re-checks the claim state,
+  # so SQLite's writer lock makes the claim atomic even across processes - a
+  # racing claim loses the conditional UPDATE and gets rowcount 0. A stale
+  # claim (crashed process) is only retaken after CLAIM_TIMEOUT, not instantly.
+  now=time.time() if now is None else now
   with self.lock,self.connect() as db:
+   candidates=[row[0] for row in db.execute("SELECT id FROM schedules WHERE enabled=1 AND next_send<=? AND (claimed_at IS NULL OR claimed_at<=?) ORDER BY next_send",(now,now-CLAIM_TIMEOUT))]
+   claimed=[]
+   for ident in candidates:
+    cur=db.execute("UPDATE schedules SET claimed_at=? WHERE id=? AND enabled=1 AND next_send<=? AND (claimed_at IS NULL OR claimed_at<=?)",(now,ident,now,now-CLAIM_TIMEOUT))
+    if cur.rowcount: claimed.append(ident)
    rows=[]
-   for row in db.execute("SELECT * FROM schedules WHERE enabled=1 AND next_send<=? ORDER BY next_send",(now or time.time(),)):
-    item=dict(row); item["messages"]=self._messages(db,row["id"]); item["channels"]=self._channels(db,row["id"]); item["post_times"]=self._post_times(db,row["id"]); rows.append(item)
+   for ident in claimed:
+    row=db.execute("SELECT * FROM schedules WHERE id=?",(ident,)).fetchone()
+    item=dict(row); item["messages"]=self._messages(db,ident); item["channels"]=self._channels(db,ident); item["post_times"]=self._post_times(db,ident); rows.append(item)
    return rows
+ def resolve_messages(self,row):
+  # Page-bound schedules always send the page's current contents, never a
+  # stale snapshot. Legacy/unlinked schedules (page_name is None) keep using
+  # their persisted message snapshot for backwards compatibility.
+  page_name=row.get("page_name")
+  if not page_name: return row["messages"]
+  page=next((item for item in self.saved_lists() if item["name"]==page_name),None)
+  if not page or not page["messages"]: raise ValueError(f"saved page '{page_name}' is missing or empty")
+  return page["messages"]
  def sent(self,ident,when,interval):
   row=self.get(ident)
   if row and row["post_times"]:
    return self._schedule_next(ident,when,interval)
-  with self.lock,self.connect() as db: db.execute("UPDATE schedules SET next_send=?,last_send=?,last_error=NULL,status=?,send_count=send_count+1,enabled=CASE WHEN send_limit>0 AND send_count+1>=send_limit THEN 0 ELSE enabled END WHERE id=?",(when+interval,when,"sent",int(ident)))
+  with self.lock,self.connect() as db: db.execute("UPDATE schedules SET next_send=?,last_send=?,last_error=NULL,status=?,send_count=send_count+1,enabled=CASE WHEN send_limit>0 AND send_count+1>=send_limit THEN 0 ELSE enabled END,claimed_at=NULL WHERE id=?",(when+interval,when,"sent",int(ident)))
  def failed(self,ident,error):
   # Keep a failed radio from tying up every scheduler pass.
-  with self.lock,self.connect() as db: db.execute("UPDATE schedules SET last_error=?,status=?,next_send=MAX(next_send,?) WHERE id=?",(str(error)[:500],"error",time.time()+60,int(ident)))
+  with self.lock,self.connect() as db: db.execute("UPDATE schedules SET last_error=?,status=?,next_send=MAX(next_send,?),claimed_at=NULL WHERE id=?",(str(error)[:500],"error",time.time()+60,int(ident)))

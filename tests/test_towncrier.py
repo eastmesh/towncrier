@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -13,7 +14,7 @@ from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from towncrier.db import Store
+from towncrier.db import Store, CLAIM_TIMEOUT
 from towncrier.app import esc, Handler
 from towncrier.engine import BotListener, Scheduler, send_message, split_message
 
@@ -167,6 +168,93 @@ class StoreTests(unittest.TestCase):
         row = self.s.schedules()[0]
         self.s.sent(row["id"], 100, 1800)
         self.assertEqual(self.s.get(row["id"])["next_send"], 1900)
+    def test_unique_page_name_migration_backfills_schedule(self):
+        path = Path(self.tmp.name) / "unique-page.db"
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE schedules(id INTEGER PRIMARY KEY,name TEXT,channel INTEGER,message TEXT,interval INTEGER,enabled INTEGER,next_send REAL,last_send REAL,last_error TEXT,status TEXT)")
+            db.execute("INSERT INTO schedules VALUES(1,'legacy',2,'hello',1800,1,0,NULL,NULL,'waiting')")
+            db.execute("CREATE TABLE saved_lists(name TEXT PRIMARY KEY,created_at REAL NOT NULL,updated_at REAL NOT NULL)")
+            db.execute("CREATE TABLE saved_list_messages(list_name TEXT NOT NULL,position INTEGER NOT NULL,message TEXT NOT NULL,PRIMARY KEY(list_name,position))")
+            db.execute("INSERT INTO saved_lists VALUES('Alerts',0,0)")
+            db.execute("INSERT INTO saved_list_messages VALUES('Alerts',0,'hello')")
+        store = Store(path)
+        self.assertEqual(store.get(1)["page_name"], "Alerts")
+
+    def test_ambiguous_identical_saved_pages_remain_unlinked(self):
+        path = Path(self.tmp.name) / "ambiguous-page.db"
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE schedules(id INTEGER PRIMARY KEY,name TEXT,channel INTEGER,message TEXT,interval INTEGER,enabled INTEGER,next_send REAL,last_send REAL,last_error TEXT,status TEXT)")
+            db.execute("INSERT INTO schedules VALUES(1,'legacy',2,'hello',1800,1,0,NULL,NULL,'waiting')")
+            db.execute("CREATE TABLE saved_lists(name TEXT PRIMARY KEY,created_at REAL NOT NULL,updated_at REAL NOT NULL)")
+            db.execute("CREATE TABLE saved_list_messages(list_name TEXT NOT NULL,position INTEGER NOT NULL,message TEXT NOT NULL,PRIMARY KEY(list_name,position))")
+            db.execute("INSERT INTO saved_lists VALUES('Alerts',0,0)")
+            db.execute("INSERT INTO saved_list_messages VALUES('Alerts',0,'hello')")
+            db.execute("INSERT INTO saved_lists VALUES('Backup',0,0)")
+            db.execute("INSERT INTO saved_list_messages VALUES('Backup',0,'hello')")
+        store = Store(path)
+        self.assertIsNone(store.get(1)["page_name"])
+
+    def test_page_bound_schedule_resolves_current_page_contents_after_change(self):
+        self.s.save_list("Alerts", ["one", "two"])
+        ident = self.s.save({"name":"x","channels":[1],"messages":["one","two"],"page_name":"Alerts","interval":1800})
+        self.assertEqual(self.s.resolve_messages(self.s.get(ident)), ["one", "two"])
+        self.s.save_list("Alerts", ["changed"])
+        self.assertEqual(self.s.resolve_messages(self.s.get(ident)), ["changed"])
+
+    def test_save_rejects_unknown_page_name(self):
+        with self.assertRaises(ValueError):
+            self.s.save({"name":"x","channels":[1],"messages":["x"],"page_name":"Missing","interval":1800})
+
+    def test_scheduler_records_failure_without_sending_when_page_missing(self):
+        self.s.save_list("Alerts", ["hi"])
+        ident = self.s.save({"name":"x","channels":[1],"messages":["hi"],"page_name":"Alerts","interval":1800})
+        self.s.delete_list("Alerts")
+        with self.s.connect() as db: db.execute("UPDATE schedules SET next_send=0")
+        FakeRadio.sent = []
+        with patch("towncrier.engine.Radio", FakeRadio):
+            Scheduler(self.s, FakeStop()).run()
+        self.assertEqual(FakeRadio.sent, [])
+        row = self.s.get(ident)
+        self.assertEqual(row["status"], "error")
+        self.assertIn("Alerts", row["last_error"])
+        self.assertEqual(self.s.due(time.time()), [])
+
+    def test_two_stores_on_same_db_only_one_claims_a_due_schedule(self):
+        self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
+        with self.s.connect() as db: db.execute("UPDATE schedules SET next_send=0")
+        other = Store(Path(self.tmp.name) / "x.db")
+        first = self.s.due()
+        second = other.due()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+
+    def test_stale_claim_is_reclaimable_only_after_timeout(self):
+        self.s.save({"name":"x","channel":1,"message":"x","interval":1800})
+        with self.s.connect() as db: db.execute("UPDATE schedules SET next_send=0")
+        first = self.s.due()
+        self.assertEqual(len(first), 1)
+        now = time.time()
+        self.assertEqual(self.s.due(now), [])
+        self.assertEqual(len(self.s.due(now + CLAIM_TIMEOUT + 1)), 1)
+
+    def test_sent_advances_daily_schedule_from_the_claimed_occurrence(self):
+        local_zone = datetime.now().astimezone().tzinfo
+        occurrence = datetime(2026, 11, 27, 9, 0, tzinfo=local_zone)
+        ident = self.s.save({"name":"x","channels":[1],"message":"x","interval":1800,"post_times":["09:00","09:05"]})
+        self.s.sent(ident, occurrence.timestamp(), 1800)
+        next_send = datetime.fromtimestamp(self.s.get(ident)["next_send"]).astimezone()
+        self.assertEqual(next_send.strftime("%H:%M"), "09:05")
+        self.assertEqual(next_send.date(), occurrence.date())
+
+    def test_scheduler_advances_using_claimed_occurrence_not_completion_time(self):
+        ident = self.s.save({"name":"x","channels":[1],"message":"x","interval":1800,"post_times":["09:00"]})
+        with self.s.connect() as db: db.execute("UPDATE schedules SET next_send=0")
+        FakeRadio.sent = []
+        with patch("towncrier.engine.Radio", FakeRadio), patch("towncrier.engine.time.time", return_value=999999):
+            Scheduler(self.s, FakeStop()).run()
+        self.assertEqual(FakeRadio.sent, [(1, "x")])
+        self.assertEqual(self.s.get(ident)["last_send"], 0)
+
     def test_escape(self): self.assertEqual(esc('<script>'), '&lt;script&gt;')
 
 class BotEntryTests(unittest.TestCase):
@@ -439,6 +527,46 @@ class BotListenerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history["Node: gamma"]["reply_status"],"unconfirmed")
 
 class WebUiTests(unittest.TestCase):
+    def test_shared_save_confirmation_hooks_cover_server_and_composer_saves(self):
+        root=Path(__file__).parents[1]/"towncrier"
+        theme=(root/"static/theme.js").read_text()
+        composer=(root/"static/publisher.js").read_text()
+        bundle=(root/"static/publisher.bundle.js").read_text()
+        page=(root/"static/publisher.html").read_text()
+        app=(root/"app.py").read_text()
+        self.assertIn("window.towncrierFlashSaved = flashSaved",theme)
+        self.assertIn("setTimeout(() =>",theme)
+        self.assertIn("1500",theme)
+        self.assertIn('data-save-id="page"',page)
+        self.assertIn("towncrierFlashSaved?.($('saveButton'))",composer)
+        self.assertIn('window.towncrierFlashSaved?.($("saveButton"))',bundle)
+        self.assertIn('window.towncrierFlashSaved?.($("scheduleSave"))',bundle)
+        self.assertIn('saved_marker={"/save":"schedule","/settings":"connection","/radio-settings":"radio-preset","/channel-save":"channel","/bot-entries":"bot-entry"}',app)
+        self.assertIn('data-save-id="bot-entry"',app)
+
+    def test_legacy_bot_save_redirects_with_success_marker_but_validation_error_does_not(self):
+        import urllib.parse
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self,*args,**kwargs): return None
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        Handler.store=Store(Path(tmp.name)/"save-confirmation.db")
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        opener=urllib.request.build_opener(NoRedirect)
+        try:
+            good=urllib.parse.urlencode({"channel":"5","trigger":"test","page_name":"Reply","message_delay":"3","enabled":"on"}).encode()
+            with self.assertRaises(urllib.error.HTTPError) as redirected:
+                opener.open(Request(f"http://127.0.0.1:{server.server_port}/bot",data=good,headers={"Content-Type":"application/x-www-form-urlencoded"}))
+            self.assertEqual(redirected.exception.code,303)
+            self.assertEqual(redirected.exception.headers["Location"],"/bot?saved=bot")
+            bad=urllib.parse.urlencode({"message_delay":"not-a-number"}).encode()
+            with self.assertRaises(urllib.error.HTTPError) as failed:
+                opener.open(Request(f"http://127.0.0.1:{server.server_port}/bot",data=bad,headers={"Content-Type":"application/x-www-form-urlencoded"}))
+            self.assertEqual(failed.exception.code,400)
+            self.assertIsNone(failed.exception.headers.get("Location"))
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+
     def test_publisher_page_contains_composer_and_page_controls(self):
         page=(Path(__file__).parents[1]/"towncrier/static/publisher.html").read_text()
         for control in ('id="messages"','id="saveButton"','id="importInput"','id="savedLists"'):
@@ -887,7 +1015,7 @@ class WebUiTests(unittest.TestCase):
                         self.assertIn("TCP port must be between 1 and 65535",result)
                         self.assertEqual(store.setting("tcp_port"),"5000")
                     else:
-                        self.assertTrue(final_url.endswith("/radio"))
+                        self.assertTrue(final_url.endswith("/radio?saved=connection"))
                         self.assertEqual(store.setting("tcp_port"),"5000")
             self.assertEqual(store.setting("connection_type"),"tcp")
             self.assertEqual(store.setting("tcp_host"),"mesh.local")
@@ -895,7 +1023,7 @@ class WebUiTests(unittest.TestCase):
             serial_data=urllib.parse.urlencode({"connection_type":"serial","port":"/dev/ttyACM1","baud":"57600"}).encode()
             serial_request=Request(base+"/settings",data=serial_data,headers={"Content-Type":"application/x-www-form-urlencoded"})
             with patch("towncrier.radio.Radio.snapshot",return_value=({},[])):
-                with urlopen(serial_request) as response: self.assertTrue(response.geturl().endswith("/radio"))
+                with urlopen(serial_request) as response: self.assertTrue(response.geturl().endswith("/radio?saved=connection"))
             self.assertEqual(store.setting("connection_type"),"serial")
             self.assertEqual(store.setting("port"),"/dev/ttyACM1")
             self.assertEqual(store.setting("baud"),"57600")
@@ -943,7 +1071,7 @@ class WebUiTests(unittest.TestCase):
             create=urllib.parse.urlencode({"channel":"5","trigger":"ping","page_name":"Reply","message_delay":"3","enabled":"on"}).encode()
             request=Request(base+"/bot-entries",data=create,headers={"Content-Type":"application/x-www-form-urlencoded"})
             with urlopen(request) as response:
-                self.assertTrue(response.geturl().endswith("/bot"))
+                self.assertTrue(response.geturl().endswith("/bot?saved=bot-entry"))
             entries=store.real_bot_entries()
             self.assertEqual(len(entries),1)
             ident=entries[0]["id"]

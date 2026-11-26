@@ -2536,6 +2536,7 @@ $("saveButton").onclick = async () => {
   }
   try {
     await saveServerList(name, messageValues());
+    window.towncrierFlashSaved?.($("saveButton"));
     $("sendStatus").textContent = `Saved \u201C${name}\u201D on the server.`;
   } catch (error) {
     $("sendStatus").textContent = `Save failed: ${error.message}`;
@@ -2676,6 +2677,7 @@ async function saveComposedSchedule(event) {
     history.replaceState({}, "", `/publisher?schedule=${result.id}`);
     $("scheduleError").textContent = "Saved. This same message sequence is now scheduled.";
     $("sendStatus").textContent = "Schedule saved. You can still publish this sequence to a room from here.";
+    window.towncrierFlashSaved?.($("scheduleSave"));
     setTimeout(() => $("scheduleDialog").close(), 500);
   } catch (error) {
     $("scheduleError").textContent = error.message;
