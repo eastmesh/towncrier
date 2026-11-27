@@ -585,6 +585,24 @@ class WebUiTests(unittest.TestCase):
         source=(root/"publisher.js").read_text()
         self.assertLess(source.index("controls.append(remove,up,down,add)"),source.index("controls.append(add,remove,up,down)") if "controls.append(add,remove,up,down)" in source else len(source))
 
+    def test_composer_message_editor_builds_its_textarea_before_appending_it(self):
+        root=Path(__file__).parents[1]/"towncrier/static"
+        source=(root/"publisher.js").read_text()
+        bundle=(root/"publisher.bundle.js").read_text()
+        for script in (source,bundle):
+            self.assertIn("message-editor-body",script)
+            self.assertIn("message-field",script)
+            self.assertIn("createElement('textarea')" if script is source else 'createElement("textarea")',script)
+            self.assertIn("field.append(ta)",script)
+            self.assertIn("editorBody.append(field,controls)" if script is source else "editorBody.append(field, controls)",script)
+
+    def test_schedule_desktop_layout_uses_spacious_three_area_grid(self):
+        css=(Path(__file__).parents[1]/"towncrier/static/publisher.css").read_text()
+        self.assertIn(".schedule-stack{display:grid;grid-template-columns:minmax(280px,1.15fr) minmax(260px,.85fr);gap:28px",css)
+        self.assertIn(".schedule-stack>.schedule-settings-rail{display:block;grid-column:1",css)
+        self.assertIn(".schedule-stack>.schedule-page-source{grid-column:2",css)
+        self.assertIn(".schedule-stack>.schedule-actions-rail{display:grid;grid-column:1",css)
+
     def test_schedule_edit_loads_composer_without_opening_dialog(self):
         source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
         self.assertIn("Scheduled sequence loaded.",source)
