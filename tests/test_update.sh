@@ -44,7 +44,10 @@ git -C "$TMP/upstream" commit -qm update
 rm -rf -- "$TMP/clone/build"
 
 cd "$TMP"
-"$TMP/clone/update.sh"
+"$TMP/clone/update.sh" > "$TMP/update.out"
+for step in 'Checking the Towncrier checkout' 'Fetching updates from origin/main' 'Building the Towncrier update' 'Installing the update' 'Restarting towncrier'; do
+  grep -Fq "==> $step" "$TMP/update.out"
+done
 [[ $(git -C "$TMP/clone" rev-parse HEAD) == "$(git -C "$TMP/upstream" rev-parse HEAD)" ]]
 "$PREFIX/.venv/bin/python" -c 'import meshcore; from towncrier.update_test_marker import MARKER; assert MARKER == "from fetched commit"'
 [[ ! -e "$TMP/clone/.venv" ]]

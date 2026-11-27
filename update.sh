@@ -10,6 +10,13 @@ RESTART=auto
 SERVICE=towncrier
 
 fail() { printf 'Update stopped: %s\n' "$*" >&2; exit 1; }
+step() {
+  if [[ -t 1 ]]; then
+    printf '\n\033[1;36m==> %s\033[0m\n' "$*"
+  else
+    printf '\n==> %s\n' "$*"
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -49,6 +56,7 @@ done
 
 # Git runs as the clone owner, not root. Refuse edits rather than stashing or
 # overwriting them. A .git file is valid too (for example, in a Git worktree).
+step 'Checking the Towncrier checkout'
 [[ -e "$REPO_DIR/.git" ]] || fail 'Run update.sh from a Git checkout of Towncrier.'
 STATUS=$(git -C "$REPO_DIR" status --porcelain)
 [[ -z "$STATUS" ]] || fail 'The Towncrier checkout has uncommitted changes.'
@@ -58,6 +66,7 @@ CURRENT_BRANCH=$(git -C "$REPO_DIR" branch --show-current)
 VENV_DIR=${CUSTOM_VENV:-$PREFIX/.venv}
 # A relative override is relative to the directory you ran the command from.
 [[ "$VENV_DIR" == /* ]] || VENV_DIR="$PWD/$VENV_DIR"
+step "Preparing Python environment: $VENV_DIR"
 if [[ "$RESTART" == auto ]]; then
   if [[ -n "$CUSTOM_VENV" ]]; then RESTART=no; else RESTART=yes; fi
 fi
@@ -82,12 +91,15 @@ fi
 
 # FETCH_HEAD is the exact branch tip just fetched, even when the clone's
 # remote-tracking configuration does not include that branch.
+step "Fetching updates from origin/$BRANCH"
 git -C "$REPO_DIR" fetch origin "refs/heads/$BRANCH"
 TARGET=$(git -C "$REPO_DIR" rev-parse FETCH_HEAD)
 git -C "$REPO_DIR" merge-base --is-ancestor HEAD "$TARGET" ||
   fail "Cannot fast-forward to origin/$BRANCH; resolve the local commits before retrying."
+step 'Updating the Towncrier checkout'
 git -C "$REPO_DIR" merge --ff-only "$TARGET"
 
+step 'Preparing the virtual environment'
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   "$PYTHON" -m venv "$VENV_DIR"
 fi
@@ -99,13 +111,17 @@ STAGE=$(mktemp -d)
 trap 'rm -rf -- "$STAGE"' EXIT
 mkdir "$STAGE/source" "$STAGE/wheels"
 git -C "$REPO_DIR" archive "$TARGET" | tar -x -C "$STAGE/source"
+step 'Building the Towncrier update'
 "$VENV_DIR/bin/python" -m pip wheel --no-deps --wheel-dir "$STAGE/wheels" "$STAGE/source"
 # Releases can share a version number. Force installation of this wheel so
 # pip never leaves an older copy of Towncrier in the service's environment.
+step 'Installing the update'
 "${INSTALL_AS[@]}" "$VENV_DIR/bin/python" -m pip install --upgrade --force-reinstall "$STAGE/wheels/"*.whl
+step 'Checking the installed Towncrier command'
 "$VENV_DIR/bin/towncrier" --help >/dev/null
 
 if [[ "$RESTART" == yes ]]; then
+  step "Restarting $SERVICE"
   "${SERVICE_AS[@]}" systemctl restart -- "$SERVICE" ||
     fail "Could not restart $SERVICE. Check: sudo journalctl -u $SERVICE -n 50"
   systemctl is-active --quiet -- "$SERVICE" ||
@@ -113,4 +129,5 @@ if [[ "$RESTART" == yes ]]; then
   printf 'Service %s is active.\n' "$SERVICE"
 fi
 
+step 'Update complete'
 printf 'Towncrier updated on branch %s using %s.\n' "$BRANCH" "$VENV_DIR"
