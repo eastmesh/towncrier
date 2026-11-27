@@ -574,6 +574,13 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('id="sendButton"',page)
         self.assertIn('href="/publish"',page)
 
+    def test_publisher_uses_flat_sections_instead_of_card_surfaces(self):
+        css=(Path(__file__).parents[1]/"towncrier/static/publisher.css").read_text()
+        self.assertIn('.panel,.towncrier-scheduler .card{background:transparent;border:0;border-radius:0;box-shadow:none;padding:0}',css)
+        self.assertIn('.towncrier-tabs{padding:0;border:0;border-radius:0;background:transparent}',css)
+        self.assertIn('.towncrier-scheduler .card+.card{border-top:1px solid var(--em-border);margin-top:14px!important;padding-top:14px}',css)
+        self.assertIn('.message-editor{background:transparent;border:0;border-radius:0;padding:0}',css)
+
     def test_server_rendered_tabs_include_the_mobile_initial_scale_viewport(self):
         source=(Path(__file__).parents[1]/"towncrier/app.py").read_text()
         self.assertGreaterEqual(source.count('name="viewport" content="width=device-width,initial-scale=1"'),3)
