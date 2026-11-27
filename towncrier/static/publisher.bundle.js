@@ -133,59 +133,12 @@ function renderMessages(values = [""]) {
   const moveMessage = (from, to) => {
     if (from === to) return;
     renderMessages(reorderMessages(messageValues(), from, to));
-    messagesEl.querySelectorAll(".drag-handle")[to]?.focus({ preventScroll: true });
+    messagesEl.querySelectorAll('[data-action="up"]')[to]?.focus({ preventScroll: true });
   };
-  const clearDragMarks = () => messagesEl.querySelectorAll(".message").forEach((item) => item.classList.remove("dragging", "drop-before", "drop-after"));
   values.forEach((value, i) => {
     const row = document.createElement("div");
     row.className = "message";
     row.dataset.index = String(i);
-    const grip = document.createElement("button");
-    grip.type = "button";
-    grip.className = "quiet drag-handle";
-    grip.textContent = "\u283F";
-    grip.title = "Drag to reorder";
-    grip.setAttribute("aria-label", `Reorder message ${i + 1}. Use the up and down arrow keys to move it.`);
-    const state = { from: null, to: null };
-    const finish = (commit) => {
-      if (state.from !== i) return;
-      const { from, to } = state;
-      clearDragMarks();
-      state.from = state.to = null;
-      if (commit && from !== null && to !== null) moveMessage(from, to);
-    };
-    grip.addEventListener("keydown", (event) => {
-      if (event.key === "ArrowUp" && i > 0) {
-        event.preventDefault();
-        moveMessage(i, i - 1);
-      } else if (event.key === "ArrowDown" && i < values.length - 1) {
-        event.preventDefault();
-        moveMessage(i, i + 1);
-      }
-    });
-    grip.addEventListener("pointerdown", (event) => {
-      if (!event.isPrimary || event.pointerType === "mouse" && event.button !== 0) return;
-      state.from = state.to = i;
-      row.classList.add("dragging");
-      grip.setPointerCapture(event.pointerId);
-      grip.focus({ preventScroll: true });
-      event.preventDefault();
-    });
-    grip.addEventListener("pointermove", (event) => {
-      if (state.from !== i || !grip.hasPointerCapture(event.pointerId)) return;
-      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(".message");
-      if (!target || !messagesEl.contains(target)) return;
-      const targetIndex = Number(target.dataset.index), bounds = target.getBoundingClientRect(), after = event.clientY >= bounds.top + bounds.height / 2;
-      let to = targetIndex + (after ? 1 : 0);
-      if (to > i) to--;
-      state.to = Math.max(0, Math.min(values.length - 1, to));
-      clearDragMarks();
-      row.classList.add("dragging");
-      target.classList.add(after ? "drop-after" : "drop-before");
-    });
-    grip.addEventListener("pointerup", () => finish(true));
-    grip.addEventListener("pointercancel", () => finish(false));
-    grip.addEventListener("lostpointercapture", () => finish(false));
     const editor = document.createElement("div");
     editor.className = "message-editor";
     const toolbar = document.createElement("div");
@@ -228,6 +181,10 @@ function renderMessages(values = [""]) {
     ta.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("sendButton").click();
     });
+    const arrangement = document.createElement("div");
+    arrangement.className = "message-rail";
+    arrangement.setAttribute("role", "group");
+    arrangement.setAttribute("aria-label", `Arrange message ${i + 1}`);
     const controls = document.createElement("div");
     controls.className = "message-actions";
     controls.setAttribute("role", "group");
@@ -268,11 +225,12 @@ function renderMessages(values = [""]) {
       moveMessage(i, i + 1);
       messagesEl.querySelectorAll(".message")[i + 1]?.querySelector('[data-action="down"]')?.focus({ preventScroll: true });
     };
-    controls.append(remove, up, down, add);
+    arrangement.append(up, down);
+    controls.append(remove, add);
     field.append(ta);
-    editorBody.append(field, controls);
+    editorBody.append(arrangement, field, controls);
     editor.append(toolbar, editorBody);
-    row.append(grip, editor);
+    row.append(editor);
     messagesEl.append(row);
     update();
   });
@@ -297,6 +255,50 @@ async function saveServerList(name, messages) {
   const data = await response.json();
   serverLists = Object.fromEntries((data.lists || []).map((item) => [item.name, item.messages]));
   renderSaved();
+}
+async function deleteServerList(name) {
+  const response = await fetch("/publisher-api/lists", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  if (!response.ok) throw Error((await response.json()).error || "delete failed");
+  const data = await response.json();
+  serverLists = Object.fromEntries((data.lists || []).map((item) => [item.name, item.messages]));
+  renderSaved();
+}
+var deletingPageName = "";
+function deletePageDialog() {
+  if ($("deletePageDialog")) return $("deletePageDialog");
+  const dialog = document.createElement("dialog");
+  dialog.id = "deletePageDialog";
+  dialog.className = "modal";
+  dialog.innerHTML = '<form method="dialog"><button class="modal-close" type="button" aria-label="Close">\xD7</button><p class="eyebrow">DELETE SAVED PAGE</p><h2>Delete this page?</h2><p id="deletePageWarning" class="muted"></p><p id="deletePageError" class="error-message" role="alert"></p><div class="actions"><button id="deletePageCancel" class="quiet" type="button">Cancel</button><button id="deletePageConfirm" class="danger" type="submit">Delete page</button></div></form>';
+  document.body.append(dialog);
+  $("deletePageDialog").querySelector(".modal-close").onclick = () => $("deletePageDialog").close();
+  $("deletePageCancel").onclick = () => $("deletePageDialog").close();
+  $("deletePageConfirm").onclick = async (event) => {
+    event.preventDefault();
+    const name = deletingPageName;
+    if (!name) return;
+    const button = $("deletePageConfirm");
+    button.disabled = true;
+    $("deletePageError").textContent = "";
+    try {
+      await deleteServerList(name);
+      if ($("pageName").value === name) $("pageName").value = "";
+      $("sendStatus").textContent = `Deleted \u201C${name}\u201D.`;
+      dialog.close();
+    } catch (error) {
+      $("deletePageError").textContent = `Delete failed: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  };
+  return dialog;
+}
+function confirmPageDelete(name) {
+  const dialog = deletePageDialog();
+  deletingPageName = name;
+  $("deletePageWarning").textContent = `Delete \u201C${name}\u201D? This cannot be undone.`;
+  $("deletePageError").textContent = "";
+  dialog.showModal();
 }
 function renderSaved() {
   const root = $("savedLists");
@@ -329,7 +331,11 @@ function renderSaved() {
     exportButton.className = "quiet";
     exportButton.textContent = "Export";
     exportButton.onclick = () => exportPage(name, data[name]);
-    actions.append(load, exportButton);
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "quiet danger";
+    deleteButton.textContent = "Delete";
+    deleteButton.onclick = () => confirmPageDelete(name);
+    actions.append(load, exportButton, deleteButton);
     row.append(left, actions);
     root.append(row);
   });

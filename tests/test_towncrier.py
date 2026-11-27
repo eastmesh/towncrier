@@ -574,16 +574,43 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('id="sendButton"',page)
         self.assertIn('href="/publish"',page)
 
+    def test_navigation_uses_rooms_radio_and_a_header_theme_toggle(self):
+        root=Path(__file__).parents[1]
+        sources=[
+            (root/"towncrier/static/publisher.html").read_text(),
+            (root/"towncrier/static/publish.html").read_text(),
+            (root/"towncrier/app.py").read_text(),
+        ]
+        for source in sources:
+            self.assertRegex(source,r'href="/publish"[^>]*>Rooms</a>')
+            self.assertRegex(source,r'href="/radio"[^>]*>Radio</a>')
+            self.assertIn('</span><button id="themeToggle"',source)
+            self.assertNotIn('href="/publish">Publish</a>',source)
+            self.assertNotIn('href="/radio">Radio Settings</a>',source)
+
+    def test_composer_page_delete_uses_a_confirmation_dialog(self):
+        source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
+        self.assertIn("deletePageDialog",source)
+        self.assertIn("showModal()",source)
+        self.assertIn("method:'DELETE'",source)
+        self.assertIn("Delete “${name}”?",source)
+
     def test_publish_page_contains_room_flow_and_saved_page_selector(self):
         page=(Path(__file__).parents[1]/"towncrier/static/publish.html").read_text()
         for control in ('id="roomServerSelect"','id="roomPassword"','id="loginButton"','id="pageSelect"','id="publishButton"'):
             self.assertIn(control,page)
 
-    def test_publisher_composer_has_per_message_add_delete_and_order_controls(self):
-        root=Path(__file__).parents[1]/"towncrier/static"
-        page=(root/"publisher.html").read_text()
-        source=(root/"publisher.js").read_text()
-        self.assertLess(source.index("controls.append(remove,up,down,add)"),source.index("controls.append(add,remove,up,down)") if "controls.append(add,remove,up,down)" in source else len(source))
+    def test_publisher_composer_has_left_side_clickable_message_order_controls(self):
+        source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
+        self.assertIn("arrangement.append(up,down)",source)
+        css=(Path(__file__).parents[1]/"towncrier/static/publisher.css").read_text()
+        self.assertIn(".message-editor-body{grid-template-columns:40px minmax(0,1fr) 40px}",css)
+        self.assertIn(".message-rail{flex-direction:column",css)
+        self.assertIn("editorBody.append(arrangement,field,controls)",source)
+        self.assertIn("controls.append(remove,add)",source)
+        self.assertNotIn("row.append(arrangement,editor)",source)
+        self.assertNotIn("drag-handle",source)
+        self.assertNotIn("pointerdown",source)
 
     def test_composer_message_editor_builds_its_textarea_before_appending_it(self):
         root=Path(__file__).parents[1]/"towncrier/static"
@@ -594,7 +621,7 @@ class WebUiTests(unittest.TestCase):
             self.assertIn("message-field",script)
             self.assertIn("createElement('textarea')" if script is source else 'createElement("textarea")',script)
             self.assertIn("field.append(ta)",script)
-            self.assertIn("editorBody.append(field,controls)" if script is source else "editorBody.append(field, controls)",script)
+            self.assertIn("editorBody.append(arrangement,field,controls)" if script is source else "editorBody.append(arrangement, field, controls)",script)
 
     def test_schedule_desktop_layout_uses_spacious_three_area_grid(self):
         css=(Path(__file__).parents[1]/"towncrier/static/publisher.css").read_text()
@@ -761,6 +788,24 @@ class WebUiTests(unittest.TestCase):
             server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
         self.assertIn(f'href="/schedules?edit={ident}"',page)
         self.assertIn("Channels: General &amp; Events, #local, Channel 7 ·",page)
+
+    def test_saved_schedules_render_as_individual_cards(self):
+        tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
+        store=Store(Path(tmp.name)/"schedule-cards.db"); Handler.store=store
+        store.save({"name":"Morning","channels":[0],"messages":["hello"],"interval":3600})
+        store.save({"name":"Evening","channels":[0],"messages":["goodnight"],"interval":3600})
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            with patch("towncrier.radio.Radio.snapshot",return_value=({},[{"index":0,"name":"General","configured":True}])):
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/schedules") as response:
+                    page=response.read().decode()
+        finally:
+            server.shutdown(); thread.join(); server.server_close(); Handler.store=old_store; tmp.cleanup()
+        self.assertIn('id="schedule-page" class="schedule-list-heading"',page)
+        self.assertEqual(page.count('class="card panel saved-schedule"'),2)
+        self.assertIn("Morning",page)
+        self.assertIn("Evening",page)
 
     def test_schedule_with_extra_daily_times_has_removal_controls(self):
         tmp=tempfile.TemporaryDirectory(); old_store=getattr(Handler,"store",None)
@@ -1290,6 +1335,14 @@ class PublisherApiTests(unittest.TestCase):
         _,_,loaded=self.request(f"/publisher-api/schedule?id={ident}")
         self.assertEqual(loaded["name"],"Morning edited")
         self.assertEqual(loaded["messages"],["revised"])
+
+    def test_publisher_page_delete_removes_the_named_saved_page(self):
+        Handler.store.save_list("Disposable",["delete me"])
+        status,_,body=self.request("/publisher-api/lists","DELETE",{"name":"Disposable"})
+        self.assertEqual(status,200)
+        self.assertEqual(body,{"lists":[]})
+        self.assertEqual(Handler.store.saved_lists(),[])
+        self.assertEqual(self.request("/publisher-api/lists","DELETE",{})[0],400)
 
     def test_login_cookie_is_required_and_bound_to_room_before_publishing(self):
         key="b"*64
