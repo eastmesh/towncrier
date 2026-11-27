@@ -43,8 +43,14 @@ export function splitMessages(values, limit = MAX_POST_BYTES) {
     let chunk = '';
     for (const character of String(value)) {
       if (encoder.encode(chunk + character).length > maxBytes) {
-        if (chunk) result.push(chunk);
-        chunk = character;
+        const boundary = chunk.lastIndexOf(' ');
+        if (boundary > 0) {
+          result.push(chunk.slice(0, boundary + 1));
+          chunk = chunk.slice(boundary + 1) + character;
+        } else {
+          if (chunk) result.push(chunk);
+          chunk = character;
+        }
       } else {
         chunk += character;
       }

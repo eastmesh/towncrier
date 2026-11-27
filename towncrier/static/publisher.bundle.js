@@ -26,8 +26,14 @@ function splitMessages(values, limit = MAX_POST_BYTES) {
     let chunk = "";
     for (const character of String(value)) {
       if (encoder.encode(chunk + character).length > maxBytes) {
-        if (chunk) result.push(chunk);
-        chunk = character;
+        const boundary = chunk.lastIndexOf(" ");
+        if (boundary > 0) {
+          result.push(chunk.slice(0, boundary + 1));
+          chunk = chunk.slice(boundary + 1) + character;
+        } else {
+          if (chunk) result.push(chunk);
+          chunk = character;
+        }
       } else {
         chunk += character;
       }
@@ -320,7 +326,7 @@ function renderSaved() {
     const actions = document.createElement("div");
     actions.className = "actions";
     const load = document.createElement("button");
-    load.className = "quiet";
+    load.className = "quiet load-button";
     load.textContent = "Load";
     load.onclick = () => {
       renderMessages(data[name]);
@@ -328,7 +334,7 @@ function renderSaved() {
       $("sendStatus").textContent = `Loaded \u201C${name}\u201D.`;
     };
     const exportButton = document.createElement("button");
-    exportButton.className = "quiet";
+    exportButton.className = "quiet export-button";
     exportButton.textContent = "Export";
     exportButton.onclick = () => exportPage(name, data[name]);
     const deleteButton = document.createElement("button");

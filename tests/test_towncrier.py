@@ -576,9 +576,13 @@ class WebUiTests(unittest.TestCase):
 
     def test_publisher_uses_compact_card_surfaces(self):
         css=(Path(__file__).parents[1]/"towncrier/static/publisher.css").read_text()
+        source=(Path(__file__).parents[1]/"towncrier/static/publisher.js").read_text()
         self.assertIn('.panel,.towncrier-scheduler .card{background:var(--em-panel);border:1px solid var(--em-border);border-radius:10px;box-shadow:none;padding:14px}',css)
         self.assertIn('.message-editor{background:var(--em-panel-soft);border:1px solid var(--em-border);border-radius:10px;padding:10px}',css)
-        self.assertIn('.towncrier-tabs{padding:0;border:0;border-radius:0;background:transparent}',css)
+        self.assertIn("load.className='quiet load-button'",source)
+        self.assertIn("exportButton.className='quiet export-button'",source)
+        self.assertIn('.saved-item .load-button{background:var(--eastmesh-green-strong);color:#fff;border-color:var(--eastmesh-green-strong)}',css)
+        self.assertIn('.saved-item .export-button{background:#2563a8;color:#fff;border-color:#2563a8}',css)
 
     def test_server_rendered_tabs_include_the_mobile_initial_scale_viewport(self):
         source=(Path(__file__).parents[1]/"towncrier/app.py").read_text()
@@ -657,6 +661,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("function update(){const info=validateMessage(ta.value);if(!info.valid)",ui)
         self.assertIn("next.splice(i,1,...chunks)",ui)
         self.assertIn("continuation?.focus()",ui)
+        self.assertIn("const boundary = chunk.lastIndexOf(' ')",source)
         self.assertIn("encoder.encode(chunk + character).length > maxBytes",source)
         self.assertNotIn("truncateUtf8(ta.value,MAX_POST_BYTES)",ui)
         self.assertIn("next.splice(i, 1, ...chunks)",bundle)
