@@ -574,6 +574,14 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('id="sendButton"',page)
         self.assertIn('href="/publish"',page)
 
+    def test_server_rendered_tabs_include_the_mobile_initial_scale_viewport(self):
+        source=(Path(__file__).parents[1]/"towncrier/app.py").read_text()
+        self.assertGreaterEqual(source.count('name="viewport" content="width=device-width,initial-scale=1"'),3)
+
+    def test_mobile_header_uses_a_compact_publisher_title(self):
+        css=(Path(__file__).parents[1]/"towncrier/static/publisher.css").read_text()
+        self.assertIn('@media(max-width:560px){.towncrier-header h1{font-size:18px;line-height:1.2}}',css)
+
     def test_navigation_uses_rooms_radio_and_a_header_theme_toggle(self):
         root=Path(__file__).parents[1]
         sources=[
